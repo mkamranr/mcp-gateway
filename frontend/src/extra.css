@@ -1,0 +1,82 @@
+/* Additions to the prototype stylesheet for the API-driven console. Same tokens, no external assets. */
+a{color:#78aaff;text-decoration:none}
+a.nav-item{text-decoration:none}
+textarea{font:inherit}
+.field textarea{width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:7px;padding:10px;font-size:11px;outline:none;min-height:80px;resize:vertical}
+.field textarea:focus{border-color:#397cf6}
+.field .hint{font-size:9px;color:var(--muted)}
+.field .err{font-size:9px;color:#ff8d98}
+.field-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px}
+.check{display:flex;align-items:center;gap:8px;font-size:10px;color:var(--text);margin:6px 0}
+.check input{accent-color:#397cf6}
+.chips{display:flex;flex-wrap:wrap;gap:5px}
+.chip{font-size:9px;padding:4px 7px;border-radius:5px;background:#24344a;color:#a8bdd8;display:inline-flex;align-items:center;gap:4px}
+.chip button{border:0;background:transparent;color:inherit;padding:0;display:grid}
+.badge{font-size:9px;padding:4px 7px;border-radius:5px;background:#24344a;color:#a8bdd8;white-space:nowrap;display:inline-flex;align-items:center;gap:4px}
+.badge.green{background:#123b33;color:#4bd7a1}
+.badge.red{background:#4b222c;color:#ff909a}
+.badge.orange{background:#493821;color:#f8c16e}
+.badge.purple{background:#332c5c;color:#a9a0ff}
+.badge.blue{background:#1b3f76;color:#9cc2ff}
+.risk.low{background:#123b33;color:#4bd7a1}
+.risk.high{background:#3c2930;color:#ff9ca5}
+.risk.none{background:#24344a;color:#a8bdd8}
+.status.unknown{color:var(--muted)}
+.status.unknown i{background:#64758c}
+.state{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:40px 20px;color:var(--muted);font-size:11px;text-align:center}
+.state svg{color:#5f7491}
+.state.error svg{color:#ff7d87}
+.state b{color:var(--text);font-size:12px}
+.spin{animation:spin 1s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.skeleton{background:linear-gradient(90deg,var(--panel2),#1b2c45,var(--panel2));background-size:200% 100%;animation:sk 1.3s infinite;border-radius:6px;height:12px}
+@keyframes sk{to{background-position:-200% 0}}
+.callout.warn{color:#f8c16e;background:#2f2618;border-color:#5a4423}
+.callout.danger{color:#ff9ca5;background:#2d1820;border-color:#6b2f3c}
+.callout.ok{color:#79dcb6;background:#10302a;border-color:#1f6150}
+.callout{margin:8px 0;align-items:flex-start;line-height:1.45}
+.callout svg{flex:0 0 auto;margin-top:1px}
+.modal.wide{width:min(820px,100%)}
+.modal-body{max-height:70vh;overflow:auto}
+.drawer-overlay{position:fixed;inset:0;background:#030914a0;z-index:50;display:flex;justify-content:flex-end}
+.drawer{width:min(620px,100%);height:100%;background:var(--panel);border-left:1px solid var(--border);display:flex;flex-direction:column;box-shadow:-20px 0 60px #0007}
+.drawer .modal-body{flex:1;max-height:none}
+pre.code{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px;font:10px/1.55 ui-monospace,SFMono-Regular,monospace;color:#c9d8ec;overflow:auto;max-height:360px;margin:6px 0;white-space:pre-wrap;word-break:break-word}
+.kv{display:grid;grid-template-columns:150px 1fr;gap:8px 14px;font-size:10px;margin:6px 0 14px}
+.kv dt{color:var(--muted)}
+.kv dd{margin:0;word-break:break-word}
+.section-title{font-size:11px;font-weight:700;margin:16px 0 8px;color:var(--text)}
+.toast-stack{position:fixed;right:25px;bottom:24px;display:grid;gap:8px;z-index:80}
+.toast-stack .toast{position:static}
+.toast.error{background:#3a1b24;border-color:#7a3141;color:#ffb3ba}
+.login-page{min-height:100vh;display:grid;place-items:center;background:radial-gradient(circle at 30% 10%,#13294a,#0a1220 60%);padding:20px;color:#e8eef8}
+.login-card{width:min(400px,100%);background:#111e30;border:1px solid #25364d;border-radius:14px;padding:28px;box-shadow:0 25px 80px #0008;--bg:#0a1220;--panel:#111e30;--panel2:#15243a;--border:#25364d;--text:#e8eef8;--muted:#8b9bb2}
+.login-card h1{font-size:20px;margin:18px 0 4px}
+.login-card p{font-size:11px;color:#8b9bb2;margin:0 0 14px}
+.login-card .btn{width:100%;margin-top:8px;padding:11px}
+.steps{display:flex;gap:6px;margin:4px 0 16px;flex-wrap:wrap}
+.steps span{font-size:9px;padding:6px 9px;border-radius:20px;background:var(--panel2);color:var(--muted);border:1px solid var(--border)}
+.steps span.on{background:#1c3c6b;color:#fff;border-color:#2f5d9e}
+.steps span.done{color:#4bd7a1}
+.tabs.large button{font-size:10px;padding:7px 12px}
+.page-tabs{margin-bottom:14px;display:inline-flex}
+.clickable{cursor:pointer}
+.link-btn{background:transparent;border:0;color:#78aaff;padding:0;font-size:inherit;text-align:left}
+.row-actions .small-btn:disabled,.btn:disabled{opacity:.45;cursor:not-allowed}
+.grid-3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
+.secret-box{display:flex;gap:8px;align-items:center;background:var(--bg);border:1px dashed #2f5d9e;border-radius:8px;padding:10px;font:11px ui-monospace,monospace;word-break:break-all}
+.timeline{display:grid;gap:0;border-left:2px solid var(--border);margin-left:6px;padding-left:14px}
+.timeline>div{position:relative;padding:6px 0 10px;font-size:10px}
+.timeline>div:before{content:'';position:absolute;left:-19px;top:10px;width:8px;height:8px;border-radius:50%;background:#397cf6}
+.timeline small{color:var(--muted);display:block;margin-top:3px}
+.filters{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:13px;align-items:center}
+.filters input,.filters select{background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:7px;padding:8px 9px;font-size:10px;min-width:120px}
+.decision{font-size:9px;font-weight:700;padding:4px 7px;border-radius:5px}
+.decision.ALLOW,.decision.allow{background:#123b33;color:#4bd7a1}
+.decision.DENY,.decision.deny{background:#4b222c;color:#ff909a}
+.decision.REQUIRE_APPROVAL{background:#332c5c;color:#a9a0ff}
+.bar-row{display:grid;grid-template-columns:minmax(0,1fr) 60px;gap:6px 10px;align-items:center;font-size:10px;margin:8px 0}
+.bar-row .progress{grid-column:1/3}
+.top-left{display:flex;align-items:center;gap:8px}
+.select-sm{background:var(--panel2);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:6px 8px;font-size:10px}
+@media(max-width:800px){.grid-3{grid-template-columns:1fr}.kv{grid-template-columns:1fr}}

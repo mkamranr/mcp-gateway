@@ -1,0 +1,127 @@
+# MCP-Gateway: single-host deployment (spec §26). Air-gap ready: every image is pinned and can be
+# loaded from a tarball (deploy/offline). Pin by digest in your registry for production.
+#
+#   ./deploy/scripts/generate-secrets.sh   # once: writes ./secrets/* (mode 600)
+#   cp .env.example .env                   # adjust non-secret settings
+#   docker compose up -d
+#
+# Only web-ui publishes a port. MongoDB and Redis live on an internal network with no host ports.
+name: mcp-gateway
+
+x-backend: &backend
+  image: ${MGW_BACKEND_IMAGE:-mcp-gateway/backend:0.1.0}
+  build: { context: ./backend }
+  env_file: [.env]
+  environment:
+    APP_ENV: production
+    SESSION_SECRET_FILE: /run/secrets/session_secret
+    DATA_ENCRYPTION_KEY_FILE: /run/secrets/data_encryption_key
+    API_KEY_HASH_PEPPER_FILE: /run/secrets/api_key_hash_pepper
+    BOOTSTRAP_ADMIN_PASSWORD_FILE: /run/secrets/bootstrap_admin_password
+    MONGODB_URI_FILE: /run/secrets/mongodb_uri
+    REDIS_URL_FILE: /run/secrets/redis_url
+  secrets: [session_secret, data_encryption_key, api_key_hash_pepper, bootstrap_admin_password, mongodb_uri, redis_url]
+  read_only: true
+  tmpfs: ["/tmp:size=64m,mode=1777"]
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  restart: unless-stopped
+  networks: [backend]
+  depends_on:
+    mongodb: { condition: service_healthy }
+    redis: { condition: service_healthy }
+  logging: &logging
+    driver: json-file
+    options: { max-size: "20m", max-file: "5" }
+
+services:
+  gateway-api:
+    <<: *backend
+    # Joins the frontend network so web-ui can reach it. It also needs egress to upstream MCP servers;
+    # restrict that with host firewall rules or an egress proxy (spec §9).
+    networks: [backend, frontend]
+    deploy: { resources: { limits: { cpus: "2", memory: 1g } } }
+
+  worker:
+    <<: *backend
+    command: ["python", "-m", "app.workers.main"]
+    networks: [backend, frontend]  # the worker executes approved calls and health checks against upstreams
+    healthcheck:
+      test: ["CMD", "python", "-m", "app.workers.healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    deploy: { resources: { limits: { cpus: "1", memory: 512m } } }
+
+  web-ui:
+    image: ${MGW_WEB_IMAGE:-mcp-gateway/web-ui:0.1.0}
+    build: { context: ./frontend }
+    # Bound to localhost by default; put a TLS-terminating load balancer in front or set MGW_HTTP_BIND.
+    ports: ["${MGW_HTTP_BIND:-127.0.0.1}:${MGW_HTTP_PORT:-8088}:8080"]
+    read_only: true
+    tmpfs: ["/tmp:size=32m"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+    networks: [frontend]
+    depends_on:
+      gateway-api: { condition: service_healthy }
+    logging: *logging
+
+  mongodb:
+    image: mongo:7.0.14
+    command: ["--auth", "--bind_ip_all", "--quiet"]
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: mgw_root
+      MONGO_INITDB_ROOT_PASSWORD_FILE: /run/secrets/mongo_root_password
+    secrets: [mongo_root_password]
+    volumes: ["mongo-data:/data/db"]
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    cap_drop: [ALL]
+    cap_add: [SETUID, SETGID, CHOWN, DAC_OVERRIDE, FOWNER]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+    networks: [backend]
+    logging: *logging
+
+  redis:
+    image: redis:7.4.1-alpine
+    # The password comes from a secret file. AOF persistence keeps quota windows and the job queue across restarts.
+    entrypoint: ["sh", "-c", "exec redis-server --requirepass \"$$(cat /run/secrets/redis_password)\" --appendonly yes --protected-mode yes --maxmemory 512mb --maxmemory-policy noeviction"]
+    secrets: [redis_password]
+    volumes: ["redis-data:/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$(cat /run/secrets/redis_password)\" --no-auth-warning ping | grep -q PONG"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    cap_drop: [ALL]
+    cap_add: [SETUID, SETGID]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+    networks: [backend]
+    logging: *logging
+
+networks:
+  frontend: {}
+  backend: { internal: true }
+
+volumes:
+  mongo-data: {}
+  redis-data: {}
+
+secrets:
+  session_secret: { file: ./secrets/session_secret }
+  data_encryption_key: { file: ./secrets/data_encryption_key }
+  api_key_hash_pepper: { file: ./secrets/api_key_hash_pepper }
+  bootstrap_admin_password: { file: ./secrets/bootstrap_admin_password }
+  mongodb_uri: { file: ./secrets/mongodb_uri }
+  redis_url: { file: ./secrets/redis_url }
+  mongo_root_password: { file: ./secrets/mongo_root_password }
+  redis_password: { file: ./secrets/redis_password }

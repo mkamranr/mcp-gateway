@@ -1,0 +1,466 @@
+"""MCP server registry and tool catalog (spec §10)."""
+
+from __future__ import annotations
+
+import json
+import re
+from typing import Any
+
+from jsonschema import Draft202012Validator
+from jsonschema.exceptions import SchemaError
+
+from app.config import Settings
+from app.core.crypto import Encryptor
+from app.core.errors import ErrorCode, GatewayError, not_found
+from app.core.identity import Principal
+from app.core.ids import canonical_json, sha256_hex, utcnow
+from app.mcp.adapters.base import ToolDefinition, UpstreamError
+from app.mcp.adapters.sdk import validate_stdio_config
+from app.mcp.client_manager import ClientManager
+from app.mcp.net_guard import NetPolicy, validate_url
+from app.models.registry import ServerCreate, ServerUpdate, ToolUpdate
+from app.repositories.collections import Repos
+from app.services.audit_service import AuditService
+
+TOOL_NAME_RE = re.compile(r"^[A-Za-z0-9_\-.]{1,64}$")
+MAX_SCHEMA_BYTES = 256 * 1024
+HEALTH_HISTORY = 50
+
+
+def upstream_error_to_gateway(exc: UpstreamError) -> GatewayError:
+    code = {
+        "timeout": ErrorCode.UPSTREAM_TIMEOUT,
+        "blocked": ErrorCode.UPSTREAM_BLOCKED,
+    }.get(exc.kind, ErrorCode.UPSTREAM_UNAVAILABLE)
+    msg = exc.detail if exc.kind == "blocked" else None
+    return GatewayError(code, msg)
+
+
+class RegistryService:
+    def __init__(
+        self, settings: Settings, repos: Repos, encryptor: Encryptor, audit: AuditService, clients: ClientManager
+    ) -> None:
+        self.settings = settings
+        self.repos = repos
+        self.encryptor = encryptor
+        self.audit = audit
+        self.clients = clients
+
+    # ------------------------------------------------------------------ validation
+    def _validate_connection(self, transport: str, cfg: dict[str, Any], allow_private: bool) -> None:
+        if transport == "streamable_http":
+            policy = NetPolicy(
+                allow_private=self.settings.allow_private_upstream_networks or allow_private,
+                host_allowlist=tuple(self.settings.upstream_host_allowlist),
+            )
+            validate_url(cfg.get("endpoint") or "", policy)
+        else:
+            try:
+                validate_stdio_config(
+                    cfg.get("command") or "", cfg.get("args") or [], cfg.get("env") or {},
+                    self.settings.stdio_executable_allowlist,
+                )
+            except UpstreamError as exc:
+                raise GatewayError(ErrorCode.UPSTREAM_BLOCKED, exc.detail) from exc
+
+    def _check_private_permission(self, principal: Principal, requested: bool) -> None:
+        if requested and not principal.has_any_role("platform_admin", "tenant_admin"):
+            raise GatewayError(
+                ErrorCode.ACCESS_DENIED, "Only administrators may permit private network destinations."
+            )
+
+    async def _store_secret(self, tenant_id: str, owner_id: str, secret: dict[str, Any], existing: str | None) -> str:
+        if existing:
+            await self.repos.secrets.delete(tenant_id, existing)
+        doc = await self.repos.secrets.insert(tenant_id, {"owner_id": owner_id, "ciphertext": "", "kind": "upstream"})
+        ciphertext = self.encryptor.encrypt(
+            json.dumps({k: v for k, v in secret.items() if v is not None}).encode(), f"{tenant_id}:{doc['_id']}"
+        )
+        await self.repos.secrets.col.update_one(
+            {"_id": doc["_id"], "tenant_id": tenant_id}, {"$set": {"ciphertext": ciphertext}}
+        )
+        return str(doc["_id"])
+
+    # ------------------------------------------------------------------ servers
+    async def create_server(self, p: Principal, data: ServerCreate) -> dict[str, Any]:
+        self._check_private_permission(p, data.allow_private_network)
+        cfg = {
+            "endpoint": data.endpoint,
+            "command": data.command,
+            "args": data.args,
+            "env": data.env,
+            "cwd": data.cwd,
+            "verify_tls": data.verify_tls,
+        }
+        self._validate_connection(data.transport, cfg, data.allow_private_network)
+        doc = await self.repos.servers.insert(
+            p.tenant_id,
+            {
+                "name": data.name,
+                "alias": data.alias,
+                "description": data.description,
+                "transport": data.transport,
+                "connection_config": cfg,
+                "enabled": data.enabled,
+                "archived": False,
+                "environment": data.environment,
+                "tags": data.tags,
+                "owner": data.owner,
+                "authentication_mode": data.authentication_mode,
+                "secret_ref": None,
+                "connection_timeout_seconds": data.connection_timeout_seconds,
+                "request_timeout_seconds": data.request_timeout_seconds,
+                "max_concurrent_calls": data.max_concurrent_calls,
+                "allow_private_network": data.allow_private_network,
+                "health_status": "unknown",
+                "tool_count": 0,
+                "enabled_tool_count": 0,
+                "created_by": p.principal_id,
+                "updated_by": p.principal_id,
+            },
+        )
+        if data.secret:
+            ref = await self._store_secret(p.tenant_id, doc["_id"], data.secret.model_dump(), None)
+            doc = await self.repos.servers.col.find_one_and_update(
+                {"_id": doc["_id"], "tenant_id": p.tenant_id}, {"$set": {"secret_ref": ref}}, return_document=True
+            )
+        await self.audit.record(
+            p.tenant_id, "server.registered", principal=p,
+            resource={"server_id": doc["_id"], "server_name": data.name},
+            metadata={"transport": data.transport, "allow_private_network": data.allow_private_network},
+        )
+        return doc
+
+    async def get_server(self, p: Principal, server_id: str) -> dict[str, Any]:
+        doc = await self.repos.servers.get(p.tenant_id, server_id)
+        if not doc or doc.get("archived"):
+            raise not_found("Server")
+        return doc
+
+    async def list_servers(self, p: Principal, *, search: str | None = None, **kw: Any) -> Any:
+        q: dict[str, Any] = {"archived": {"$ne": True}}
+        if search:
+            q["name"] = {"$regex": re.escape(search), "$options": "i"}
+        return await self.repos.servers.list(p.tenant_id, q, sort=[("name", 1)], **kw)
+
+    async def update_server(self, p: Principal, server_id: str, data: ServerUpdate) -> dict[str, Any]:
+        current = await self.get_server(p, server_id)
+        changes: dict[str, Any] = {"updated_by": p.principal_id}
+        fields = data.model_dump(exclude_unset=True, exclude={"version", "secret"})
+        cfg = dict(current.get("connection_config", {}))
+        for key in ("endpoint", "command", "args", "env", "cwd", "verify_tls"):
+            if key in fields:
+                cfg[key] = fields.pop(key)
+        allow_private = fields.get("allow_private_network", current.get("allow_private_network", False))
+        if "allow_private_network" in fields:
+            self._check_private_permission(p, bool(fields["allow_private_network"]))
+        if cfg != current.get("connection_config") or "allow_private_network" in fields:
+            self._validate_connection(current["transport"], cfg, allow_private)
+            changes["connection_config"] = cfg
+        changes.update(fields)
+        if data.secret is not None:
+            changes["secret_ref"] = await self._store_secret(
+                p.tenant_id, server_id, data.secret.model_dump(), current.get("secret_ref")
+            )
+        doc = await self.repos.servers.update(p.tenant_id, server_id, changes, expected_version=data.version)
+        event = "server.changed"
+        if "enabled" in fields and fields["enabled"] != current.get("enabled"):
+            event = "server.enabled" if fields["enabled"] else "server.disabled"
+        await self.audit.record(
+            p.tenant_id, event, principal=p, resource={"server_id": server_id, "server_name": doc["name"]},
+            metadata={"changed_fields": sorted(set(changes) - {"updated_by"}), "secret_rotated": data.secret is not None},
+        )
+        return doc
+
+    async def set_server_enabled(self, p: Principal, server_id: str, enabled: bool) -> dict[str, Any]:
+        current = await self.get_server(p, server_id)
+        doc = await self.repos.servers.update(p.tenant_id, server_id, {"enabled": enabled, "updated_by": p.principal_id})
+        if current.get("enabled") != enabled:
+            await self.audit.record(
+                p.tenant_id, "server.enabled" if enabled else "server.disabled", principal=p,
+                resource={"server_id": server_id, "server_name": doc["name"]},
+            )
+        return doc
+
+    async def archive_server(self, p: Principal, server_id: str) -> None:
+        """Delete = archive. Disables immediately, frees the name, keeps tools/audit for history."""
+        doc = await self.get_server(p, server_id)
+        suffix = f"#archived-{server_id[-8:]}"
+        await self.repos.servers.update(
+            p.tenant_id, server_id,
+            {"archived": True, "enabled": False, "name": doc["name"] + suffix, "alias": doc["alias"] + suffix,
+             "updated_by": p.principal_id},
+        )
+        tools = await self.repos.tools.find_all(p.tenant_id, {"server_id": server_id})
+        for t in tools:
+            await self.repos.tools.update(
+                p.tenant_id, t["_id"],
+                {"archived": True, "enabled": False, "gateway_name": t["gateway_name"] + suffix},
+            )
+        await self.audit.record(
+            p.tenant_id, "server.deleted", principal=p, severity="high",
+            resource={"server_id": server_id, "server_name": doc["name"]}, metadata={"tools_archived": len(tools)},
+        )
+
+    async def test_connection(self, p: Principal | None, server: dict[str, Any]) -> dict[str, Any]:
+        """Connects and lists tools; records health. Never returns upstream internals."""
+        start = utcnow()
+        try:
+            async with self.clients.session(server) as adapter:
+                result = await adapter.health_check()
+        except UpstreamError as exc:
+            from app.mcp.adapters.base import HealthResult
+
+            result = HealthResult(False, int((utcnow() - start).total_seconds() * 1000), error=exc.detail or exc.kind)
+        status = "healthy" if result.healthy else "unhealthy"
+        entry = {"at": utcnow(), "status": status, "latency_ms": result.latency_ms, "error": result.error}
+        await self.repos.servers.col.update_one(
+            {"_id": server["_id"], "tenant_id": server["tenant_id"]},
+            {
+                "$set": {
+                    "health_status": status, "last_health_check_at": entry["at"],
+                    "last_health_error": result.error, "last_latency_ms": result.latency_ms,
+                },
+                "$push": {"health_history": {"$each": [entry], "$slice": -HEALTH_HISTORY}},
+            },
+        )
+        if p is not None:
+            await self.audit.record(
+                server["tenant_id"], "server.tested", principal=p,
+                resource={"server_id": server["_id"], "server_name": server["name"]}, status=status,
+                duration_ms=result.latency_ms,
+            )
+        return {"healthy": result.healthy, "status": status, "latency_ms": result.latency_ms,
+                "error": result.error, "tool_count": result.tool_count}
+
+    # ------------------------------------------------------------------ discovery
+    @staticmethod
+    def _validate_definition(t: ToolDefinition) -> str | None:
+        if not TOOL_NAME_RE.match(t.name):
+            return "invalid tool name"
+        if len(canonical_json(t.input_schema)) > MAX_SCHEMA_BYTES:
+            return "input schema too large"
+        if t.input_schema.get("type", "object") != "object":
+            return "input schema must describe an object"
+        try:
+            Draft202012Validator.check_schema(t.input_schema)
+            if t.output_schema:
+                Draft202012Validator.check_schema(t.output_schema)
+        except SchemaError:
+            return "invalid JSON schema"
+        return None
+
+    async def refresh_tools(self, p: Principal | None, server: dict[str, Any]) -> dict[str, Any]:
+        tenant_id = server["tenant_id"]
+        try:
+            async with self.clients.session(server) as adapter:
+                definitions = await adapter.list_tools()
+        except UpstreamError as exc:
+            await self.repos.servers.col.update_one(
+                {"_id": server["_id"], "tenant_id": tenant_id},
+                {"$set": {"discovery": {"status": "failed", "at": utcnow(), "error": exc.detail or exc.kind}}},
+            )
+            raise upstream_error_to_gateway(exc) from exc
+
+        actor = p.principal_id if p else "system"
+        now = utcnow()
+        summary: dict[str, Any] = {"new": [], "changed": [], "unchanged": 0, "rejected": [], "removed": []}
+        seen: set[str] = set()
+        for t in definitions[:1000]:
+            problem = self._validate_definition(t)
+            if problem:
+                summary["rejected"].append({"name": t.name[:64], "reason": problem})
+                continue
+            seen.add(t.name)
+            fingerprint = sha256_hex(
+                {"input": t.input_schema, "output": t.output_schema, "description": t.description}
+            )
+            existing = await self.repos.tools.find_one(tenant_id, {"server_id": server["_id"], "upstream_name": t.name})
+            if existing is None:
+                tool = await self.repos.tools.insert(
+                    tenant_id,
+                    {
+                        "server_id": server["_id"],
+                        "server_name": server["name"],
+                        "upstream_name": t.name,
+                        "gateway_name": f"{server['alias']}__{t.name}",
+                        "description": t.description[:4000],
+                        "input_schema": t.input_schema,
+                        "output_schema": t.output_schema,
+                        "annotations": t.annotations,
+                        "schema_hash": fingerprint,
+                        "schema_version": 1,
+                        "risk_level": None,
+                        "enabled": False,  # default deny: never auto-enable (spec §10.3)
+                        "review_status": "pending_review",
+                        "available": True,
+                        "archived": False,
+                        "last_discovered_at": now,
+                    },
+                )
+                await self._record_version(tenant_id, tool["_id"], fingerprint, t, actor, 1)
+                summary["new"].append(t.name)
+                await self.audit.record(
+                    tenant_id, "tool.discovered", principal=p,
+                    resource={"server_id": server["_id"], "tool_id": tool["_id"], "tool_name": t.name},
+                )
+            elif existing["schema_hash"] != fingerprint:
+                version = int(existing.get("schema_version", 1)) + 1
+                await self.repos.tools.update(
+                    tenant_id, existing["_id"],
+                    {
+                        "description": t.description[:4000], "input_schema": t.input_schema,
+                        "output_schema": t.output_schema, "annotations": t.annotations,
+                        "schema_hash": fingerprint, "schema_version": version, "available": True,
+                        "previous_schema_hash": existing["schema_hash"],
+                        # Block invocation until an administrator reviews the change.
+                        "review_status": "schema_changed", "last_discovered_at": now,
+                    },
+                )
+                await self._record_version(tenant_id, existing["_id"], fingerprint, t, actor, version)
+                summary["changed"].append(t.name)
+                await self.audit.record(
+                    tenant_id, "tool.schema.changed", principal=p, severity="high",
+                    resource={"server_id": server["_id"], "tool_id": existing["_id"], "tool_name": t.name},
+                    metadata={"old_hash": existing["schema_hash"], "new_hash": fingerprint,
+                              "schema_version": version, "was_enabled": existing.get("enabled", False)},
+                )
+            else:
+                summary["unchanged"] += 1
+                await self.repos.tools.col.update_one(
+                    {"_id": existing["_id"], "tenant_id": tenant_id},
+                    {"$set": {"last_discovered_at": now, "available": True}},
+                )
+        # Tools no longer offered upstream become unavailable (kept for history).
+        for gone in await self.repos.tools.find_all(
+            tenant_id, {"server_id": server["_id"], "upstream_name": {"$nin": list(seen)}, "available": True,
+                        "archived": {"$ne": True}}
+        ):
+            await self.repos.tools.col.update_one(
+                {"_id": gone["_id"], "tenant_id": tenant_id}, {"$set": {"available": False}}
+            )
+            summary["removed"].append(gone["upstream_name"])
+
+        await self._update_counts(tenant_id, server["_id"], extra={
+            "discovery": {"status": "ok", "at": now, "summary": {k: (len(v) if isinstance(v, list) else v)
+                                                                   for k, v in summary.items()}},
+        })
+        if p is not None:
+            await self.audit.record(
+                tenant_id, "server.tools.refreshed", principal=p,
+                resource={"server_id": server["_id"], "server_name": server["name"]},
+                metadata={k: (len(v) if isinstance(v, list) else v) for k, v in summary.items()},
+            )
+        return summary
+
+    async def _record_version(
+        self, tenant_id: str, tool_id: str, fingerprint: str, t: ToolDefinition, actor: str, version: int
+    ) -> None:
+        await self.repos.tool_versions.insert(
+            tenant_id,
+            {
+                "tool_id": tool_id, "schema_hash": fingerprint, "schema_version": version,
+                "input_schema": t.input_schema, "output_schema": t.output_schema,
+                "description": t.description[:4000], "discovered_at": utcnow(), "discovered_by": actor,
+            },
+        )
+
+    async def _update_counts(self, tenant_id: str, server_id: str, extra: dict[str, Any] | None = None) -> None:
+        base = {"server_id": server_id, "archived": {"$ne": True}, "available": True}
+        total = await self.repos.tools.count(tenant_id, base)
+        enabled = await self.repos.tools.count(tenant_id, {**base, "enabled": True})
+        await self.repos.servers.col.update_one(
+            {"_id": server_id, "tenant_id": tenant_id},
+            {"$set": {"tool_count": total, "enabled_tool_count": enabled, **(extra or {})}},
+        )
+
+    # ------------------------------------------------------------------ tools
+    async def get_tool(self, p: Principal, tool_id: str) -> dict[str, Any]:
+        doc = await self.repos.tools.get(p.tenant_id, tool_id)
+        if not doc or doc.get("archived"):
+            raise not_found("Tool")
+        return doc
+
+    async def list_tools(
+        self,
+        p: Principal,
+        *,
+        server_id: str | None = None,
+        risk: str | None = None,
+        enabled: bool | None = None,
+        approval_required: bool | None = None,
+        review_status: str | None = None,
+        search: str | None = None,
+        **kw: Any,
+    ) -> Any:
+        q: dict[str, Any] = {"archived": {"$ne": True}}
+        if server_id:
+            q["server_id"] = server_id
+        if risk:
+            q["risk_level"] = None if risk == "unclassified" else risk
+        if enabled is not None:
+            q["enabled"] = enabled
+        if approval_required is not None:
+            q["approval.required"] = True if approval_required else {"$ne": True}
+        if review_status:
+            q["review_status"] = review_status
+        if search:
+            rx = {"$regex": re.escape(search), "$options": "i"}
+            q["$or"] = [{"upstream_name": rx}, {"gateway_name": rx}, {"description": rx}, {"display_name": rx}]
+        return await self.repos.tools.list(p.tenant_id, q, sort=[("gateway_name", 1)], **kw)
+
+    async def update_tool(self, p: Principal, tool_id: str, data: ToolUpdate) -> dict[str, Any]:
+        current = await self.get_tool(p, tool_id)
+        fields = data.model_dump(exclude_unset=True, exclude={"version", "acknowledge_schema_change"})
+        for k in ("approval", "limits", "output"):
+            if k in fields and fields[k] is not None:
+                fields[k] = getattr(data, k).model_dump()
+        risk = fields.get("risk_level", current.get("risk_level"))
+        enabling = fields.get("enabled") is True and not current.get("enabled")
+        review = current.get("review_status", "pending_review")
+        if data.acknowledge_schema_change:
+            if review != "schema_changed":
+                raise GatewayError(ErrorCode.CONFLICT, "There is no schema change to acknowledge.")
+            fields["review_status"] = "approved"
+            review = "approved"
+        if fields.get("enabled") is True:
+            if not risk:
+                raise GatewayError(ErrorCode.VALIDATION_FAILED, "Assign a risk level before enabling a tool.",
+                                   details=[{"field": "risk_level", "code": "required"}])
+            if review == "schema_changed":
+                raise GatewayError(ErrorCode.TOOL_SCHEMA_CHANGED,
+                                   "Review and acknowledge the schema change before enabling.")
+            if review == "pending_review":
+                fields["review_status"] = "approved"
+            if not current.get("available", True):
+                raise GatewayError(ErrorCode.CONFLICT, "The tool is no longer offered by the upstream server.")
+        if risk == "critical" and fields.get("approval", current.get("approval", {})).get("required") is False:
+            # Critical tools always require approval (spec §14.1); keep the flag truthful.
+            approval = dict(fields.get("approval") or current.get("approval") or {})
+            approval["required"] = True
+            fields["approval"] = approval
+        fields["updated_by"] = p.principal_id
+        doc = await self.repos.tools.update(p.tenant_id, tool_id, fields, expected_version=data.version)
+        await self._update_counts(p.tenant_id, doc["server_id"])
+        event = "tool.changed"
+        if "enabled" in fields and fields["enabled"] != current.get("enabled"):
+            event = "tool.enabled" if fields["enabled"] else "tool.disabled"
+        await self.audit.record(
+            p.tenant_id, event, principal=p,
+            resource={"server_id": doc["server_id"], "tool_id": tool_id, "tool_name": doc["upstream_name"]},
+            metadata={"changed_fields": sorted(set(fields) - {"updated_by"}), "risk_level": doc.get("risk_level"),
+                      "enabling": enabling, "schema_acknowledged": bool(data.acknowledge_schema_change)},
+        )
+        return doc
+
+    async def tool_versions(self, p: Principal, tool_id: str) -> list[dict[str, Any]]:
+        await self.get_tool(p, tool_id)
+        page = await self.repos.tool_versions.list(
+            p.tenant_id, {"tool_id": tool_id}, sort=[("discovered_at", -1)], limit=100
+        )
+        return [
+            {"id": v["_id"], "schema_hash": v["schema_hash"], "schema_version": v.get("schema_version"),
+             "input_schema": v.get("input_schema"), "output_schema": v.get("output_schema"),
+             "discovered_at": v.get("discovered_at"), "discovered_by": v.get("discovered_by")}
+            for v in page["items"]
+        ]
