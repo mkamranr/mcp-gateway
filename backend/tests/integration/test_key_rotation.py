@@ -65,3 +65,20 @@ async def test_rotation_includes_the_sso_client_secret(admin, mock_idp, containe
     doc = await container.repos.settings.col.find_one({"key": "oidc"})
     assert new.decrypt(doc["value"]["client_secret_enc"], SECRET_AAD) == b"sso-rotate-me"
     assert (await rotate(container.db.db, old, new)).already_new == 1
+
+
+async def test_verify_data_detects_the_wrong_key(admin, mock_idp, upstream_url, container):
+    from app.tools.verify_data import verify
+
+    r = await admin.post("/api/v1/servers", json={
+        "name": "Verify", "alias": "verify", "transport": "streamable_http", "endpoint": upstream_url,
+        "allow_private_network": True, "authentication_mode": "bearer", "secret": {"token": "verify-me"}})
+    assert r.status_code == 201, r.text
+    r = await admin.put("/api/v1/sso/config", json={"enabled": False, "issuer": mock_idp.issuer, "client_secret": "s"})
+    assert r.status_code == 200, r.text
+    ok = await verify(container.db.db, container.encryptor)
+    assert ok["ciphertexts"] == {"checked": 2, "failed": []}
+    assert ok["collections"]["users"] >= 1 and ok["collections"]["secrets"] == 1
+    bad = await verify(container.db.db, Encryptor(os.urandom(32)))
+    assert bad["ciphertexts"]["checked"] == 2 and len(bad["ciphertexts"]["failed"]) == 2
+    assert "verify-me" not in str(bad)

@@ -152,6 +152,46 @@ jobs:
           fi
       - name: Smoke test through the web-ui proxy
         run: python3 .github/scripts/compose_smoke.py http://127.0.0.1:8088 secrets/bootstrap_admin_password
+      # ---- Backup and restore drill: the documented scripts, a full volume wipe, then a verified restore ----
+      - name: "Drill: seed data and take a backup"
+        run: |
+          python3 .github/scripts/restore_drill.py seed http://127.0.0.1:8088 secrets/bootstrap_admin_password drill-state.json
+          docker compose run --rm --no-deps -T gateway-api python -m app.tools.verify_data --json > drill-before.json
+          sh deploy/scripts/backup.sh drill-backups
+          ls -l drill-backups
+      - name: "Drill: change data after the backup, then destroy every volume"
+        run: |
+          python3 .github/scripts/restore_drill.py mutate http://127.0.0.1:8088 secrets/bootstrap_admin_password drill-state.json
+          docker compose down -v
+          docker volume ls
+      - name: "Drill: a damaged archive is refused"
+        run: |
+          cp drill-backups/*.archive.gz /tmp/damaged.archive.gz
+          sed 's/^[0-9a-f]*/0000000000000000000000000000000000000000000000000000000000000000/' drill-backups/*.sha256 \
+            | sed 's#  .*#  damaged.archive.gz#' > /tmp/damaged.archive.gz.sha256
+          if sh deploy/scripts/restore.sh /tmp/damaged.archive.gz --yes; then
+            echo "::error::restore accepted an archive with a wrong checksum"; exit 1
+          fi
+      - name: "Drill: restore onto empty volumes (offline)"
+        run: sh deploy/scripts/restore.sh "$(ls drill-backups/*.archive.gz)" --yes
+      - name: "Drill: verify the restored system"
+        run: |
+          docker compose run --rm --no-deps -T gateway-api python -m app.tools.verify_data --json > drill-after.json
+          python3 .github/scripts/restore_drill.py check http://127.0.0.1:8088 secrets/bootstrap_admin_password \
+            drill-state.json drill-before.json drill-after.json
+      - name: "Drill: a restore with the wrong encryption key is stopped before serving traffic"
+        run: |
+          cp secrets/data_encryption_key /tmp/real.key
+          head -c 32 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=\n' > secrets/data_encryption_key
+          if sh deploy/scripts/restore.sh "$(ls drill-backups/*.archive.gz)" --yes; then
+            echo "::error::restore with the wrong key was not stopped"; exit 1
+          fi
+          state="$(docker compose ps --status running --services)"
+          echo "running after refused restore: $state"
+          if echo "$state" | grep -qE 'gateway-api|worker|web-ui'; then
+            echo "::error::services were started despite failed verification"; exit 1
+          fi
+          cp /tmp/real.key secrets/data_encryption_key
       - name: Logs
         if: always()
         run: docker compose logs --no-color --tail=300

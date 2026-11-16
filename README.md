@@ -102,7 +102,7 @@ GitHub Actions (`.github/workflows/ci.yml`) runs on every push and pull request 
 | Backend | ruff, mypy, full pytest suite against real MongoDB 7 and Redis 7 service containers |
 | Frontend | typecheck, production build, and `check:offline`, which fails if the bundle references any external origin |
 | Dependency scan | `pip-audit` on the locked production dependencies, `npm audit --omit=dev` (high and above) |
-| Compose smoke test | builds the images, **blocks all container egress to public addresses**, starts the full stack with `--pull never`, then checks health, published ports, MongoDB auth, sign-in, CSRF, logout and security headers through the web-ui proxy |
+| Compose smoke test | builds the images, **blocks all container egress to public addresses**, starts the full stack with `--pull never`, then checks health, published ports, MongoDB auth, sign-in, CSRF, logout and security headers through the web-ui proxy. Then a **backup and restore drill**: seed data, back up with `backup.sh`, wipe every volume, restore with `restore.sh`, and verify data, keys and secrets. It also checks that a damaged archive and a wrong encryption key are refused. |
 
 `release-bundle.yml` (run manually) builds the air-gap bundle, deletes every image, then verifies,
 loads and starts the bundle with egress blocked, as an air-gapped host would. Dependabot proposes

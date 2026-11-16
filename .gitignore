@@ -34,3 +34,5 @@ sbom/
 Thumbs.db
 .idea/
 .vscode/
+# database backups made by deploy/scripts/backup.sh
+backups/

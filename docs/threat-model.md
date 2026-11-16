@@ -41,6 +41,6 @@ decisions · tool arguments and results (may contain personal data) · the audit
 
 ## Out of scope / not yet covered
 
-Penetration test, tested backup and restore drills, SAML and SCIM provisioning, mTLS between internal
+Penetration test, SAML and SCIM provisioning, mTLS between internal
 services, HSM/KMS-backed keys, and multi-host high availability. These are documented as next steps in the
 operations guide.

@@ -21,6 +21,7 @@ import argparse
 import asyncio
 import base64
 import sys
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -52,61 +53,56 @@ class Report:
     failed: list[str] = field(default_factory=list)
 
 
-async def rotate(db: Any, old: Encryptor, new: Encryptor, *, dry_run: bool = False) -> Report:
-    report = Report()
-    for collection, fld, suffix in TARGETS:
-        async for doc in db[collection].find({fld: {"$nin": [None, ""]}}, {fld: 1, "tenant_id": 1}):
-            ad = f"{doc['tenant_id']}:{doc['_id']}{suffix}"
-            token = doc[fld]
-            try:
-                new.decrypt(token, ad)
-                report.already_new += 1
-                continue
-            except Exception:  # noqa: BLE001,S110 - not yet rotated
-                pass
-            try:
-                plaintext = old.decrypt(token, ad)
-            except Exception:  # noqa: BLE001
-                report.failed.append(f"{collection}/{doc['_id']}.{fld}")
-                continue
-            if not dry_run:
-                # Compare-and-set on the old ciphertext so a concurrent writer is never overwritten.
-                res = await db[collection].update_one({"_id": doc["_id"], fld: token},
-                                                      {"$set": {fld: new.encrypt(plaintext, ad)}})
-                if res.modified_count != 1:
-                    report.failed.append(f"{collection}/{doc['_id']}.{fld} (changed during rotation)")
-                    continue
-            report.rotated += 1
-    await _rotate_oidc_secret(db, old, new, report, dry_run)
-    return report
+@dataclass
+class Ciphertext:
+    """One stored AES-GCM value: where it lives and the associated data it was sealed with."""
+
+    label: str
+    collection: str
+    doc_id: Any
+    field: str  # dotted path, used for the compare-and-set update
+    token: str
+    ad: str
 
 
-async def _rotate_oidc_secret(db: Any, old: Encryptor, new: Encryptor, report: Report, dry_run: bool) -> None:
+async def iter_ciphertexts(db: Any) -> AsyncIterator[Ciphertext]:
+    """Every ciphertext the gateway stores. Shared by rotation and by ``app.tools.verify_data``."""
     from app.services.sso_service import CONFIG_KEY, SECRET_AAD
 
+    for collection, fld, suffix in TARGETS:
+        async for doc in db[collection].find({fld: {"$nin": [None, ""]}}, {fld: 1, "tenant_id": 1}):
+            yield Ciphertext(f"{collection}/{doc['_id']}.{fld}", collection, doc["_id"], fld, doc[fld],
+                             f"{doc['tenant_id']}:{doc['_id']}{suffix}")
     fld = "value.client_secret_enc"
     doc = await db["system_settings"].find_one({"key": CONFIG_KEY, fld: {"$nin": [None, ""]}})
-    if doc is None:
-        return
-    token = doc["value"]["client_secret_enc"]
-    try:
-        new.decrypt(token, SECRET_AAD)
-        report.already_new += 1
-        return
-    except Exception:  # noqa: BLE001,S110 - not yet rotated
-        pass
-    try:
-        plaintext = old.decrypt(token, SECRET_AAD)
-    except Exception:  # noqa: BLE001
-        report.failed.append(f"system_settings/{CONFIG_KEY}.client_secret_enc")
-        return
-    if not dry_run:
-        res = await db["system_settings"].update_one({"_id": doc["_id"], fld: token},
-                                                     {"$set": {fld: new.encrypt(plaintext, SECRET_AAD)}})
-        if res.modified_count != 1:
-            report.failed.append(f"system_settings/{CONFIG_KEY}.client_secret_enc (changed during rotation)")
-            return
-    report.rotated += 1
+    if doc is not None:
+        yield Ciphertext(f"system_settings/{CONFIG_KEY}.client_secret_enc", "system_settings", doc["_id"], fld,
+                         doc["value"]["client_secret_enc"], SECRET_AAD)
+
+
+async def rotate(db: Any, old: Encryptor, new: Encryptor, *, dry_run: bool = False) -> Report:
+    report = Report()
+    async for c in iter_ciphertexts(db):
+        try:
+            new.decrypt(c.token, c.ad)
+            report.already_new += 1
+            continue
+        except Exception:  # noqa: BLE001,S110 - not yet rotated
+            pass
+        try:
+            plaintext = old.decrypt(c.token, c.ad)
+        except Exception:  # noqa: BLE001
+            report.failed.append(c.label)
+            continue
+        if not dry_run:
+            # Compare-and-set on the old ciphertext so a concurrent writer is never overwritten.
+            res = await db[c.collection].update_one({"_id": c.doc_id, c.field: c.token},
+                                                    {"$set": {c.field: new.encrypt(plaintext, c.ad)}})
+            if res.modified_count != 1:
+                report.failed.append(f"{c.label} (changed during rotation)")
+                continue
+        report.rotated += 1
+    return report
 
 
 async def _main(ns: argparse.Namespace) -> int:

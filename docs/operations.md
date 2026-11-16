@@ -55,21 +55,50 @@ What to back up:
 | Redis | not required | holds sessions, quota windows and the job queue. See Redis recovery. |
 
 ```bash
-# backup
-docker compose exec -T mongodb sh -c \
-  'mongodump --quiet --archive --gzip -u mgw_root -p "$(cat /run/secrets/mongo_root_password)" --authenticationDatabase admin --db mcp_gateway' \
-  > backup-$(date +%F).archive.gz
+# backup (online; run from the install directory). Writes backups/mcp-gateway-<UTC>.archive.gz + .sha256
+sh deploy/scripts/backup.sh [output-dir]
 
-# restore (services that write must be stopped)
-docker compose stop gateway-api worker
-docker compose exec -T mongodb sh -c \
-  'mongorestore --quiet --archive --gzip --drop -u mgw_root -p "$(cat /run/secrets/mongo_root_password)" --authenticationDatabase admin' \
-  < backup-YYYY-MM-DD.archive.gz
-docker compose start gateway-api worker
+# restore (prompts before replacing the database; --yes for automation)
+sh deploy/scripts/restore.sh backups/mcp-gateway-20261116T020000Z.archive.gz
 ```
 
-Restore with the **same** encryption key and pepper that were active when the backup was taken. Test a
-restore into a staging environment at least quarterly. That drill has not been done for this release.
+`restore.sh` checks the archive against its `.sha256`, stops `web-ui`, `gateway-api` and `worker`, starts
+MongoDB alone and runs `mongorestore --drop`. It then runs `python -m app.tools.verify_data`, which decrypts
+every stored secret with the configured `DATA_ENCRYPTION_KEY`. Only if that succeeds does it start the stack
+and wait for it to be healthy. With the wrong key, the services **stay stopped** and the script exits non-zero.
+Put the right key back in `secrets/` and run it again.
+
+Restore with the **same** `data_encryption_key` and `api_key_hash_pepper` that were active when the backup
+was taken. The pepper cannot be checked by the tool, but with the wrong one every agent key fails.
+
+**Disaster recovery on a new host:** install as usual (images, `docker-compose.yml`, `.env`), copy the
+original `secrets/` directory from your key backup instead of generating new secrets, then run `restore.sh`.
+No other step is needed. The script brings MongoDB up on the empty volume itself.
+
+After a restore:
+
+- Sessions, quota windows and queued jobs live in Redis and are not part of the backup. Users may have to
+  sign in again. Approvals that were approved but not yet executed when the backup was taken are re-queued
+  automatically by the worker's maintenance sweep. They are still fully revalidated before they execute.
+- Anything created after the backup (agents, keys, policies, audit events) is gone. Revoke any agent key
+  issued after the backup at its consumer, because it no longer exists here.
+- Run `docker compose run --rm --no-deps gateway-api python -m app.tools.verify_data` at any time to see
+  document counts and confirm every secret decrypts (read-only, prints no secrets).
+
+**Verified in CI.** Every push runs this procedure end to end, offline, in the `compose-smoke` job
+(`.github/scripts/restore_drill.py`):
+
+1. Seed a tenant and tenant admin, a server with an encrypted secret, an agent key and an encrypted SSO
+   client secret, then take a backup with `backup.sh`.
+2. Create data after the backup, then destroy every volume (`docker compose down -v`).
+3. Check that `restore.sh` refuses an archive with a wrong checksum.
+4. Restore onto the empty volumes.
+5. Check that the seeded data is back and usable (both admins sign in, the agent key authenticates), that
+   the post-backup data is gone, that document counts match the backup, and that every ciphertext decrypts.
+6. Check that a restore with the wrong encryption key leaves the services stopped.
+
+Still rehearse a restore into your own staging environment at least quarterly, using your real backup
+storage and key custody.
 
 ## Redis recovery and quota behaviour
 
