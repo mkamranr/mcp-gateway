@@ -266,7 +266,10 @@ jobs:
           docker compose ps -q gateway-api | sort > /tmp/now-api
           new="$(comm -13 /tmp/original-api /tmp/now-api)"
           test -n "$new" || { echo "::error::no new replica"; exit 1; }
-          # Stop both original replicas: only the new one is left, so nginx must have resolved it.
+          # nginx re-resolves gateway-api every 10 s (resolver valid=10s), so a new replica is picked up within
+          # that window. Wait it out, then stop both original replicas: only the new one is left, so every
+          # request below must reach it.
+          sleep 12
           docker stop $(cat /tmp/original-api)
           sleep 2
           python3 .github/scripts/ha_check.py hammer "$BASE" /tmp/session.json 40
