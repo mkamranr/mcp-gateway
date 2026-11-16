@@ -94,7 +94,12 @@ class Settings(BaseSettings):
     @classmethod
     def _split_csv(cls, v: object) -> object:
         if isinstance(v, str):
-            return [x.strip() for x in v.split(",") if x.strip()]
+            items = [x.strip() for x in v.split(",") if x.strip()]
+            if any(x.startswith("#") for x in items):
+                # Compose env files read "VAR=   # comment" as the value "# comment". Fail loudly instead of
+                # running with a silently wrong allowlist.
+                raise ValueError("value looks like a comment; put comments on their own line in the env file")
+            return items
         return v
 
     @model_validator(mode="after")

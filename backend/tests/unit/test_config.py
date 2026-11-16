@@ -31,3 +31,12 @@ def test_production_rejects_wildcard_cors_and_placeholders(monkeypatch):
     monkeypatch.setenv("SESSION_SECRET", "replace-with-a-long-random-value-xxxxxxxx")
     with pytest.raises(ValueError, match="placeholder"):
         Settings(_env_file=None)
+
+
+def test_env_comment_mistaken_for_a_value_is_rejected():
+    import pytest as _pytest
+
+    with _pytest.raises(ValueError, match="comment"):
+        Settings._split_csv("# e.g. hr-mcp.internal.example,*.mcp.internal.example")
+    assert Settings._split_csv("") == []
+    assert Settings._split_csv("a.example, *.b.example") == ["a.example", "*.b.example"]
