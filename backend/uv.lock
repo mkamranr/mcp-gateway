@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = "==3.12.*"
 
 [[package]]
@@ -544,7 +544,7 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "fakeredis", extras = ["lua"], specifier = ">=2.26" },
+    { name = "fakeredis", extras = ["lua"], specifier = ">=2.40.0" },
     { name = "mypy", specifier = ">=1.13" },
     { name = "pymongo-inmemory", specifier = ">=0.5" },
     { name = "pytest", specifier = ">=8.3" },
