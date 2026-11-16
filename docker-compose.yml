@@ -1,7 +1,7 @@
 # MCP-Gateway: single-host deployment (spec §26). Air-gap ready: every image is pinned and can be
 # loaded from a tarball (deploy/offline). Pin by digest in your registry for production.
 #
-#   ./deploy/scripts/generate-secrets.sh   # once: writes ./secrets/* (mode 600)
+#   ./deploy/scripts/generate-secrets.sh   # once: writes ./secrets/ (dir 0700, files 0644)
 #   cp .env.example .env                   # adjust non-secret settings
 #   docker compose up -d
 #
@@ -93,6 +93,7 @@ services:
   redis:
     image: redis:7.4.1-alpine
     # The password comes from a secret file. AOF persistence keeps quota windows and the job queue across restarts.
+    user: "redis"  # the image's non-root user (uid 999), which owns /data
     entrypoint: ["sh", "-c", "exec redis-server --requirepass \"$$(cat /run/secrets/redis_password)\" --appendonly yes --protected-mode yes --maxmemory 512mb --maxmemory-policy noeviction"]
     secrets: [redis_password]
     volumes: ["redis-data:/data"]
@@ -102,7 +103,6 @@ services:
       timeout: 5s
       retries: 10
     cap_drop: [ALL]
-    cap_add: [SETUID, SETGID]
     security_opt: ["no-new-privileges:true"]
     restart: unless-stopped
     networks: [backend]

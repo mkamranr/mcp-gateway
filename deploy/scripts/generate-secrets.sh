@@ -1,5 +1,10 @@
 #!/usr/bin/env sh
-# Generates the secret files used by docker-compose.yml into ./secrets (mode 600).
+# Generates the secret files used by docker-compose.yml into ./secrets.
+#
+# Permissions: the directory is 0700 (only the deploying user can reach the files on the host) and the
+# files are 0644. Compose mounts file secrets with their host owner and mode, and the services run as
+# non-root users (MongoDB/Redis uid 999, backend uid 10001), so the files must be world-readable for
+# those container users to read them. The 0700 directory is what keeps other host users out.
 # Existing files are never overwritten. Delete one deliberately to rotate it (see docs/operations.md).
 #
 #   ./deploy/scripts/generate-secrets.sh [secrets-dir]
@@ -8,6 +13,7 @@ set -eu
 DIR="${1:-./secrets}"
 umask 077
 mkdir -p "$DIR"
+chmod 700 "$DIR"
 
 rand() { # $1 = number of random bytes, urlsafe base64 without padding
   head -c "$1" /dev/urandom | base64 | tr '+/' '-_' | tr -d '=\n'
@@ -15,10 +21,11 @@ rand() { # $1 = number of random bytes, urlsafe base64 without padding
 
 write() { # $1 = name, $2 = value
   if [ -s "$DIR/$1" ]; then
+    chmod 644 "$DIR/$1"
     echo "keep     $DIR/$1"
   else
     printf '%s' "$2" > "$DIR/$1"
-    chmod 600 "$DIR/$1"
+    chmod 644 "$DIR/$1"
     echo "created  $DIR/$1"
   fi
 }

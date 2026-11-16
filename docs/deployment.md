@@ -15,7 +15,7 @@ volumes · a TLS certificate (terminate TLS at your load balancer, or add it to 
 ## Install
 
 ```bash
-./deploy/scripts/generate-secrets.sh        # ./secrets/* (mode 600); never commit
+./deploy/scripts/generate-secrets.sh        # ./secrets/ (dir 0700, files 0644); never commit
 cp .env.example .env                         # set PUBLIC_BASE_URL, allowlists, limits
 docker compose up -d                         # air-gapped: add --no-build --pull never
 docker compose ps                            # all services healthy
@@ -31,10 +31,10 @@ My account).
 |---|---|
 | Only `web-ui` publishes a port, bound to localhost by default | `ports` |
 | MongoDB and Redis are on an `internal: true` network with no host ports | `networks.backend` |
-| Secrets are mounted as files (`/run/secrets/*`) and read through `*_FILE` variables | `secrets` |
+| Secrets are mounted as files (`/run/secrets/*`) and read through `*_FILE` variables. On the host they sit in a 0700 directory (files 0644, so the non-root container users can read them) | `secrets` |
 | Read-only root filesystems, `tmpfs` for `/tmp` | `read_only`, `tmpfs` |
 | `cap_drop: [ALL]`, `no-new-privileges` | all services |
-| Non-root processes (backend uid 10001, nginx-unprivileged uid 101) | Dockerfiles |
+| Non-root processes (backend uid 10001, nginx-unprivileged uid 101, Redis uid 999; MongoDB drops to uid 999 after start-up) | Dockerfiles, `user` |
 | MongoDB `--auth`, Redis `requirepass`, AOF persistence | service commands |
 | Health checks (API `/health/live`, worker heartbeat, DB pings) and `depends_on: service_healthy` | `healthcheck` |
 | Pinned image tags (pin digests in your registry) | `image` |
