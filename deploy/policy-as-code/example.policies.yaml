@@ -1,0 +1,52 @@
+# Example policy bundle. Validate and preview with:  python mgw_policy.py plan example.policies.yaml
+# Format reference: docs/policy-as-code.md
+apiVersion: mcp-gateway/v1
+kind: PolicyBundle
+metadata:
+  name: hr-assistants        # this bundle owns the policies it creates; --prune only removes its own
+  scope: tenant
+  description: Access for the HR assistant agents.
+policies:
+  - name: hr-assistant-read
+    description: Read-only HR lookups during business hours.
+    effect: allow
+    principals:
+      types: [agent]
+      ids: [agt_replace_with_agent_id]
+    resources:
+      servers: [hr]
+      tools: [get_attendance_summary, get_employee_profile]
+    actions: [discover, invoke]
+    constraints:
+      environments: [production]
+      max_calls_per_minute: 30
+      time_windows:
+        - days: [0, 1, 2, 3, 4]
+          start: "07:00"
+          end: "19:00"
+
+  - name: hr-assistant-email
+    description: Sending email needs a human approver.
+    effect: allow
+    principals:
+      types: [agent]
+      ids: [agt_replace_with_agent_id]
+    resources:
+      servers: [hr]
+      tools: [send_email]
+    actions: [discover, invoke]
+    constraints:
+      require_approval: true
+      required_approvals: 1
+      max_calls_per_hour: 20
+
+  - name: no-deletes-anywhere
+    description: Deny always wins over allow.
+    effect: deny
+    principals:
+      types: ["*"]
+    resources:
+      servers: ["*"]
+      tools: ["delete_*", "*_delete"]
+    actions: [invoke]
+    priority: 10

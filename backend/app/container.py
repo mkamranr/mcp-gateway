@@ -14,6 +14,7 @@ from app.services.audit_service import AuditService
 from app.services.auth_service import AuthService
 from app.services.identity_service import IdentityService
 from app.services.invocation_service import InvocationService
+from app.services.policy_bundle_service import PolicyBundleService
 from app.services.policy_service import PolicyService
 from app.services.quota_service import QuotaService
 from app.services.registry_service import RegistryService
@@ -38,6 +39,7 @@ class Container:
         self.siem = SiemService(settings, self.repos, self.redis, self.encryptor, self.audit)
         self.registry = RegistryService(settings, self.repos, self.encryptor, self.audit, self.clients)
         self.policy = PolicyService(self.repos, self.audit)
+        self.policy_bundles = PolicyBundleService(self.repos, self.audit)
         self.validation = ValidationService(settings)
         self.quotas = QuotaService(settings, self.redis)
         self.approvals = ApprovalService(settings, self.repos, self.redis, self.encryptor, self.audit)

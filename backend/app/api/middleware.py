@@ -103,7 +103,8 @@ def install_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(GatewayError)
     async def gateway_error(request: Request, exc: GatewayError) -> JSONResponse:
         safe_extra = {k: v for k, v in exc.extra.items() if k in ("retry_after_seconds", "scope", "window",
-                                                                   "approval_id", "status_url", "expires_at")}
+                                                                   "approval_id", "status_url", "expires_at", "fingerprint",
+                                                                   "bundle")}
         return JSONResponse(
             _envelope(exc.code, exc.message, request_id_var.get(), exc.details, safe_extra or None),
             status_code=exc.status, headers=exc.headers,

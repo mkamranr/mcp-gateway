@@ -85,7 +85,17 @@ export interface Policy {
   effect: 'allow' | 'deny'; kind: string; system: boolean; principals: PolicyPrincipals
   resources: PolicyResources; actions: ('discover' | 'invoke')[]; constraints: PolicyConstraints
   priority: number; enabled: boolean; broad: string[]; version: number
+  managed_by?: { kind: 'bundle'; bundle: string } | null
   created_by: string; updated_by: string; created_at: string; updated_at: string
+}
+
+export type BundleAction = 'create' | 'update' | 'adopt' | 'delete' | 'unchanged' | 'orphan'
+export interface BundleIssue { policy: string; code: string; message: string }
+export interface BundlePlan {
+  bundle: string; scope: 'tenant' | 'global'; tenant_id: string; prune: boolean; valid: boolean
+  errors: BundleIssue[]; warnings: BundleIssue[]; summary: Record<BundleAction, number>; fingerprint: string
+  changes: { action: BundleAction; name: string; policy_id: string | null; broad?: string[]; diff: Record<string, { from: unknown; to: unknown }> }[]
+  applied?: boolean
 }
 
 export interface Decision {

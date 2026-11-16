@@ -4,7 +4,7 @@
 
 | Principal | Credential | Storage | Notes |
 |---|---|---|---|
-| **User** (human) | username + password → server-side session | Argon2id hash; session in Redis keyed by SHA-256 of the session ID | Cookie `__Host-mgw_session` (HttpOnly, Secure, SameSite=Strict). Unsafe methods need `X-CSRF-Token` to match the `mgw_csrf` cookie (double submit). Login is throttled per user and IP. Sessions have absolute and idle timeouts. |
+| **User** (human) | username + password → server-side session | Argon2id hash; session in Redis keyed by SHA-256 of the session ID | Cookie `__Host-mgw_session` (HttpOnly, Secure, SameSite=Strict). Unsafe methods need `X-CSRF-Token` to match the `mgw_csrf` cookie (double submit). Login is throttled per user and IP: failed attempts count, successful ones don't. Sessions have absolute and idle timeouts. |
 | **Agent** | API key `mgw_live_<16-hex public id>_<secret>` | HMAC-SHA256(pepper) of the key; only the prefix is stored in clear | Shown **once** at creation or rotation. Constant-time comparison. Scopes: `tools:list`, `tools:invoke`, `approvals:read`. Optional expiry. Revocable individually, per agent, or all at once (emergency). |
 
 User sessions cannot call `/mcp`, and agent keys cannot call administrative routes.
@@ -56,6 +56,10 @@ Discovery (`tools/list`) returns only tools that are enabled, reviewed, on an en
 `discover`. Discovery never grants anything: `tools/call` is evaluated again from scratch. Allow policies with
 wildcards, or that match every principal, are rejected unless `confirm_broad_grant: true` is sent. The UI asks
 for typed confirmation.
+
+Policies can also be managed as code ([policy-as-code.md](policy-as-code.md)). Bundles go through the same
+validation, apply only a reviewed plan (bound by fingerprint), are all or nothing, and only ever modify or prune
+policies they own. Hand edits of a bundle-owned policy need an explicit override, which is audited.
 
 ## Tool lifecycle controls
 

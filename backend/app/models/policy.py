@@ -106,6 +106,9 @@ class PolicyUpdate(Strict):
     priority: int | None = Field(default=None, ge=0, le=999_999)
     enabled: bool | None = None
     confirm_broad_grant: bool = False
+    # Policies applied from a bundle are owned by code; editing one by hand needs explicit acknowledgement
+    # (the next bundle apply shows the edit as drift and reverts it).
+    confirm_managed_override: bool = False
 
 
 class SimulateRequest(Strict):
@@ -144,6 +147,7 @@ def policy_to_api(doc: dict[str, Any]) -> dict[str, Any]:
         "principals": doc.get("principals"), "resources": doc.get("resources"), "actions": doc.get("actions"),
         "constraints": doc.get("constraints", {}), "priority": doc.get("priority", 100),
         "enabled": doc.get("enabled", False), "broad": doc.get("broad", []), "version": doc.get("version", 1),
+        "managed_by": doc.get("managed_by"),
         "created_by": doc.get("created_by"), "updated_by": doc.get("updated_by"),
         "created_at": doc.get("created_at"), "updated_at": doc.get("updated_at"),
     }

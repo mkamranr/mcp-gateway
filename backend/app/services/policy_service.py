@@ -207,6 +207,18 @@ class PolicyService:
             return "*"
         return p.tenant_id
 
+    @staticmethod
+    def _check_managed(doc: dict[str, Any], confirmed: bool) -> bool:
+        """True when a hand edit overrides a bundle-owned policy (recorded in the audit event)."""
+        owner = doc.get("managed_by") or {}
+        if owner.get("bundle") and not confirmed:
+            raise GatewayError(
+                ErrorCode.POLICY_MANAGED_BY_CODE,
+                f"This policy is managed by the policy bundle {owner['bundle']!r}. Change it in the bundle, or "
+                "confirm the override: the next apply of the bundle will revert this edit.",
+                extra={"bundle": owner["bundle"]})
+        return bool(owner.get("bundle"))
+
     async def _get_editable(self, p: Principal, policy_id: str) -> dict[str, Any]:
         doc = await self.repos.policies.get(p.tenant_id, policy_id)
         if doc is None:
@@ -254,7 +266,9 @@ class PolicyService:
 
     async def update(self, p: Principal, policy_id: str, data: PolicyUpdate) -> dict[str, Any]:
         current = await self._get_editable(p, policy_id)
-        changes = data.model_dump(exclude_unset=True, exclude={"version", "confirm_broad_grant"})
+        overridden = self._check_managed(current, data.confirm_managed_override)
+        changes = data.model_dump(exclude_unset=True, exclude={"version", "confirm_broad_grant",
+                                                               "confirm_managed_override"})
         principals = data.principals or Principals(**current["principals"])
         resources = data.resources or Resources(**current["resources"])
         effect = changes.get("effect", current["effect"])
@@ -276,16 +290,19 @@ class PolicyService:
         await self.audit.record(p.tenant_id, "policy.changed", principal=p,
                                 resource={"policy_id": policy_id, "policy_name": doc["name"]},
                                 metadata={"changed_fields": sorted(set(changes) - {"updated_by", "broad"}),
-                                          "snapshot": _snapshot(doc), "previous": _snapshot(current)})
+                                          "snapshot": _snapshot(doc), "previous": _snapshot(current),
+                                          "managed_override": overridden})
         return doc
 
-    async def set_enabled(self, p: Principal, policy_id: str, enabled: bool) -> dict[str, Any]:
+    async def set_enabled(self, p: Principal, policy_id: str, enabled: bool,
+                          confirm_managed_override: bool = False) -> dict[str, Any]:
         current = await self._get_editable(p, policy_id)
+        overridden = self._check_managed(current, confirm_managed_override)
         doc = await self.repos.policies.update(current["tenant_id"], policy_id,
                                                {"enabled": enabled, "updated_by": p.principal_id})
         await self.audit.record(p.tenant_id, "policy.enabled" if enabled else "policy.disabled", principal=p,
                                 resource={"policy_id": policy_id, "policy_name": doc["name"]},
-                                metadata={"snapshot": _snapshot(doc)})
+                                metadata={"snapshot": _snapshot(doc), "managed_override": overridden})
         return doc
 
     async def clone(self, p: Principal, policy_id: str) -> dict[str, Any]:
@@ -308,12 +325,13 @@ class PolicyService:
                                 metadata={"cloned_from": policy_id, "snapshot": _snapshot(doc)})
         return doc
 
-    async def delete(self, p: Principal, policy_id: str) -> None:
+    async def delete(self, p: Principal, policy_id: str, confirm_managed_override: bool = False) -> None:
         current = await self._get_editable(p, policy_id)
+        overridden = self._check_managed(current, confirm_managed_override)
         await self.repos.policies.delete(current["tenant_id"], policy_id)
         await self.audit.record(p.tenant_id, "policy.deleted", principal=p,
                                 resource={"policy_id": policy_id, "policy_name": current["name"]},
-                                metadata={"snapshot": _snapshot(current)})
+                                metadata={"snapshot": _snapshot(current), "managed_override": overridden})
 
     async def history(self, p: Principal, policy_id: str) -> list[dict[str, Any]]:
         page = await self.repos.audit.search(p.tenant_id, {"resource.policy_id": policy_id}, limit=100)

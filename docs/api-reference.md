@@ -76,12 +76,15 @@ Roles: P = platform_admin, T = tenant_admin, S = security_admin, A = approver, U
 | Method | Path | Who | Notes |
 |---|---|---|---|
 | GET/POST | `/policies` | any / P T S | POST with wildcards or all principals needs `confirm_broad_grant: true` |
-| GET/PATCH/DELETE | `/policies/{id}` | any / P T S | system and global policies are protected |
-| POST | `/policies/{id}/enable` \| `/disable` \| `/clone` | P T S | |
+| GET/PATCH/DELETE | `/policies/{id}` | any / P T S | system and global policies are protected. A policy owned by a bundle needs `confirm_managed_override: true` (PATCH body) or `?confirm_managed_override=true` (DELETE) |
+| POST | `/policies/{id}/enable` \| `/disable` \| `/clone` | P T S | enable/disable of a bundle-owned policy needs `?confirm_managed_override=true`. A clone is never bundle-owned |
+| GET | `/policies/bundle/export` | P T S U | `?bundle=&scope=tenant\|global&include=all\|bundle` → YAML bundle. See [policy as code](policy-as-code.md) |
+| POST | `/policies/bundle/plan` | P T S D U | `{content}`, `?prune=true` → validation, warnings, per-policy diff and `fingerprint`. Changes nothing |
+| POST | `/policies/bundle/apply` | P T S | `{content, expected_fingerprint, prune}`. All or nothing. 409 `VERSION_CONFLICT` if live policies changed since the plan |
 | GET | `/policies/{id}/history` | any | snapshots from audit |
 | POST | `/policies/simulate` | P T S D U | `{principal_type, principal_id, tool_id \| gateway_name, action, arguments?, source_ip?}`. **Never dispatches.** |
 
-Policy document:
+Policy document (a policy read also returns `managed_by: {kind: "bundle", bundle}` when a bundle owns it):
 ```json
 {"name": "HR agent reads attendance", "effect": "allow", "priority": 100, "enabled": true,
  "principals": {"types": ["agent"], "ids": ["agt_…"], "roles": []},
@@ -132,7 +135,8 @@ Policy document:
 | CSRF_FAILED | 403 | missing or mismatched CSRF token |
 | SEPARATION_OF_DUTIES | 403 | requester or agent owner tried to approve |
 | NOT_FOUND / TOOL_NOT_FOUND | 404 | unknown, or in another tenant |
-| CONFLICT / VERSION_CONFLICT | 409 | state conflict / stale `version` |
+| CONFLICT / VERSION_CONFLICT | 409 | state conflict / stale `version` (or a stale bundle plan) |
+| POLICY_MANAGED_BY_CODE | 409 | hand edit of a bundle-owned policy without `confirm_managed_override` |
 | SERVER_DISABLED / TOOL_DISABLED / TOOL_SCHEMA_CHANGED | 409 | tool state blocks a call (reported only to callers with a grant) |
 | APPROVAL_EXPIRED / APPROVAL_INVALIDATED / APPROVAL_STATE_CONFLICT | 409 | approval cannot proceed |
 | VALIDATION_FAILED | 422 | request body invalid |

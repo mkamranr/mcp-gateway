@@ -29,6 +29,9 @@ actions, and records an append-only audit trail. Built for on-premises and air-g
 - **Default-deny policy engine.** Allow/deny policies over principals, servers, tools, risk levels and actions.
   Conditions cover environment, time window, source CIDR and rate. Deny overrides allow. Wildcard grants need
   explicit confirmation. Includes a simulator and version history.
+- **Policy as code.** Keep policies as YAML bundles in git: validate, plan (field-level diff) and apply from CI
+  with a dependency-free CLI, or in the console. Apply makes exactly the reviewed plan, all or nothing, and only
+  touches policies the bundle owns. See [docs/policy-as-code.md](docs/policy-as-code.md).
 - **One enforcement pipeline.** The MCP endpoint, the REST invoke API and the approval worker all go through
   the same steps: authenticate → tool state → policy → JSON-Schema validation → approval → quotas → dispatch →
   output controls → audit.
@@ -116,5 +119,5 @@ weekly updates for uv, npm, Actions and base images.
 [Architecture](docs/architecture.md) · [Security model](docs/security-model.md) ·
 [Threat model](docs/threat-model.md) · [API reference](docs/api-reference.md) ·
 [MCP client configuration](docs/mcp-client-configuration.md) · [Deployment](docs/deployment.md) ·
-[Air-gapped installation](docs/air-gapped-installation.md) · [Single sign-on](docs/sso.md) · [SIEM forwarding](docs/siem.md) · [Operations & runbooks](docs/operations.md) ·
+[Air-gapped installation](docs/air-gapped-installation.md) · [Single sign-on](docs/sso.md) · [SIEM forwarding](docs/siem.md) · [Policy as code](docs/policy-as-code.md) · [Operations & runbooks](docs/operations.md) ·
 [Security policy](SECURITY.md) · [Contributing](CONTRIBUTING.md)

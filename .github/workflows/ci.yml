@@ -152,6 +152,26 @@ jobs:
           fi
       - name: Smoke test through the web-ui proxy
         run: python3 .github/scripts/compose_smoke.py http://127.0.0.1:8088 secrets/bootstrap_admin_password
+      - name: Policy-as-code CLI against the stack
+        env:
+          MGW_URL: http://127.0.0.1:8088
+          MGW_USERNAME: admin
+        run: |
+          set -u
+          export MGW_PASSWORD="$(cat secrets/bootstrap_admin_password)"
+          cli="python3 deploy/policy-as-code/mgw_policy.py"
+          expect() { want=$1; shift; set +e; "$@"; got=$?; set -e; [ "$got" = "$want" ] || { echo "::error::'$*' exited $got, expected $want"; exit 1; }; }
+          $cli export -o /tmp/before.yaml && grep -q "kind: PolicyBundle" /tmp/before.yaml
+          $cli validate deploy/policy-as-code/example.policies.yaml
+          expect 2 $cli plan deploy/policy-as-code/example.policies.yaml --detailed-exitcode --out /tmp/plan.json
+          $cli apply deploy/policy-as-code/example.policies.yaml --plan /tmp/plan.json
+          expect 0 $cli plan deploy/policy-as-code/example.policies.yaml --detailed-exitcode
+          expect 3 $cli apply deploy/policy-as-code/example.policies.yaml --plan /tmp/plan.json   # stale plan refused
+          expect 1 $cli apply deploy/policy-as-code/example.policies.yaml < /dev/null             # no silent apply
+          $cli export --bundle hr-assistants --only-owned | grep -q "name: hr-assistant-read"
+          printf 'apiVersion: mcp-gateway/v1\nkind: PolicyBundle\nmetadata: {name: hr-assistants}\npolicies: []\n' > /tmp/empty.yaml
+          $cli apply /tmp/empty.yaml --prune --auto-approve
+          $cli export --bundle hr-assistants --only-owned | grep -q "policies: \[\]"
       # ---- Backup and restore drill: the documented scripts, a full volume wipe, then a verified restore ----
       - name: "Drill: seed data and take a backup"
         run: |

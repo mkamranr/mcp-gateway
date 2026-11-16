@@ -85,8 +85,8 @@ export const api = {
   put: <T>(path: string, body: unknown) => request<T>('PUT', path, body),
   patch: <T>(path: string, body: unknown) => request<T>('PATCH', path, body),
   del: <T = void>(path: string) => request<T>('DELETE', path),
-  download: async (path: string, body: unknown, fallbackName: string) => {
-    const res = await request<Response>('POST', path, body, { raw: true })
+  download: async (path: string, body: unknown, fallbackName: string, method: 'GET' | 'POST' = 'POST') => {
+    const res = await request<Response>(method, path, method === 'GET' ? undefined : body, { raw: true })
     const blob = await res.blob()
     const cd = res.headers.get('Content-Disposition') || ''
     const name = /filename="([^"]+)"/.exec(cd)?.[1] || fallbackName

@@ -47,6 +47,8 @@ export function PolicyEditor({ policy, onClose }: { policy?: Policy; onClose: ()
   const [jsonErr, setJsonErr] = useState<string | null>(null)
   const [err, setErr] = useState<ApiError | null>(null)
   const [needBroad, setNeedBroad] = useState(false)
+  const managedBy = policy?.managed_by?.bundle
+  const [ackManaged, setAckManaged] = useState(false)
   const qc = useQueryClient()
   const toast = useToast()
 
@@ -76,7 +78,7 @@ export function PolicyEditor({ policy, onClose }: { policy?: Policy; onClose: ()
     mutationFn: (confirm: boolean) => {
       let body: Draft = d
       if (mode === 'json') body = JSON.parse(json)
-      const payload = { ...body, confirm_broad_grant: confirm }
+      const payload = { ...body, confirm_broad_grant: confirm, ...(managedBy ? { confirm_managed_override: ackManaged } : {}) }
       return editing ? api.patch<Policy>(`/policies/${policy!.id}`, { ...payload, version: policy!.version }) : api.post<Policy>('/policies', payload)
     },
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['policies'] }); toast.ok(editing ? 'Policy updated' : 'Policy created'); onClose() },
@@ -93,13 +95,17 @@ export function PolicyEditor({ policy, onClose }: { policy?: Policy; onClose: ()
   return (
     <Modal wide title={editing ? `Edit policy: ${policy!.name}` : 'New policy'} onClose={onClose} footer={<>
       <button className="btn secondary" onClick={onClose}>Cancel</button>
-      <button className="btn primary" disabled={save.isPending || (mode === 'json' && !!jsonErr)} onClick={() => {
+      <button className="btn primary" disabled={save.isPending || (mode === 'json' && !!jsonErr) || (!!managedBy && !ackManaged)} onClick={() => {
         if (mode === 'json') { try { JSON.parse(json) } catch (e) { setJsonErr(`Invalid JSON: ${(e as Error).message}`); return } }
         setErr(null); save.mutate(false)
       }}>{save.isPending && <Loader2 size={13} className="spin" />}{editing ? 'Save policy' : 'Create policy'}</button>
     </>}>
       <Tabs value={mode} onChange={switchMode} options={[{ value: 'guided', label: 'Guided' }, { value: 'json', label: 'JSON' }]} />
       {err && <Callout kind="danger">{errorMessage(err)}</Callout>}
+      {managedBy && <Callout kind="warn">
+        This policy is managed by the policy bundle <b>{managedBy}</b>. Edit the bundle instead: the next apply of that bundle reverts changes made here.
+        <label className="check" style={{ marginTop: 6 }}><input type="checkbox" checked={ackManaged} onChange={e => setAckManaged(e.target.checked)} />I understand. Save a temporary override anyway (recorded in the audit log).</label>
+      </Callout>}
       {editing && policy!.system && <Callout kind="warn">This is a system policy. The server may reject changes to it.</Callout>}
 
       {mode === 'json' ? <>

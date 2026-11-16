@@ -178,6 +178,19 @@ async def test_login_failures_are_uniform_and_rate_limited(app, settings):
         assert r.status_code == 429
 
 
+async def test_only_failed_logins_count_towards_the_limit(app, settings):
+    """Automation (e.g. the policy-as-code CLI in CI) signs in often; that must not lock the account."""
+    settings.login_max_attempts_per_window = 3
+    good = {"username": "admin", "password": ADMIN_PASSWORD}
+    async with make_client(app) as http:
+        for _ in range(6):
+            assert (await http.post("/api/v1/auth/login", json=good)).status_code == 200
+        for _ in range(3):
+            assert (await http.post("/api/v1/auth/login", json={**good, "password": "nope"})).status_code == 401
+        # the window is now exhausted by failures: even the right password is refused
+        assert (await http.post("/api/v1/auth/login", json=good)).status_code == 429
+
+
 async def test_role_enforcement(scenario, app):
     s = await scenario.setup()
     auditor = await new_user_client(app, s.admin, s.tenant_id, ["auditor"])

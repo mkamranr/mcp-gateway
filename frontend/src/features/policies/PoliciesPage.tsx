@@ -1,16 +1,17 @@
 import { useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Copy, History, Lock, Pencil, Play, Plus, Trash2 } from 'lucide-react'
+import { Code2, Copy, History, Lock, Pencil, Play, Plus, Trash2 } from 'lucide-react'
 import { useAuth, useTenantId } from '../../app/auth'
 import { api, errorMessage } from '../../services/api'
 import { dateTime, normalizePolicy } from '../../services/format'
 import type { Agent, Decision, Page, Policy, Tool, TenantUser } from '../../services/types'
 import { Badge, Callout, Confirm, DecisionBadge, Drawer, Empty, Field, JsonView, Loading, PageHeading, Panel, QueryState, Status, Switch, Tabs, useToast } from '../../components/ui'
 import { PolicyEditor } from './PolicyEditor'
+import { PolicyBundles } from './PolicyBundles'
 
 export function PoliciesPage() {
-  const [tab, setTab] = useState<'list' | 'simulate'>('list')
+  const [tab, setTab] = useState<'list' | 'simulate' | 'code'>('list')
   const { can } = useAuth()
   const [editing, setEditing] = useState<Policy | 'new' | null>(null)
   const canWrite = can('platform_admin', 'tenant_admin', 'security_admin')
@@ -18,8 +19,8 @@ export function PoliciesPage() {
     <>
       <PageHeading eyebrow="ACCESS CONTROL" title="Policies" subtitle="Default deny. A tool is reachable only when an allow policy matches and no deny policy does."
         actions={canWrite && <button className="btn primary" onClick={() => setEditing('new')}><Plus size={14} />New policy</button>} />
-      <Tabs large value={tab} onChange={setTab} options={[{ value: 'list', label: 'Policies' }, { value: 'simulate', label: 'Simulator' }]} />
-      {tab === 'list' ? <PolicyList canWrite={canWrite} onEdit={setEditing} /> : <Simulator />}
+      <Tabs large value={tab} onChange={setTab} options={[{ value: 'list', label: 'Policies' }, { value: 'simulate', label: 'Simulator' }, { value: 'code', label: 'Policy as code' }]} />
+      {tab === 'list' ? <PolicyList canWrite={canWrite} onEdit={setEditing} /> : tab === 'simulate' ? <Simulator /> : <PolicyBundles />}
       {editing && <PolicyEditor policy={editing === 'new' ? undefined : editing} onClose={() => setEditing(null)} />}
     </>
   )
@@ -33,10 +34,12 @@ function PolicyList({ canWrite, onEdit }: { canWrite: boolean; onEdit: (p: Polic
   const toast = useToast()
   const [deleting, setDeleting] = useState<Policy | null>(null)
   const [history, setHistory] = useState<Policy | null>(null)
+  const [overriding, setOverriding] = useState<Policy | null>(null)
   const done = (msg: string) => () => { qc.invalidateQueries({ queryKey: ['policies'] }); toast.ok(msg) }
-  const toggle = useMutation({ mutationFn: (p: Policy) => api.post(`/policies/${p.id}/${p.enabled ? 'disable' : 'enable'}`), onSuccess: done('Policy updated'), onError: e => toast.error(e) })
+  const override = (p: Policy) => p.managed_by?.bundle ? '?confirm_managed_override=true' : ''
+  const toggle = useMutation({ mutationFn: (p: Policy) => api.post(`/policies/${p.id}/${p.enabled ? 'disable' : 'enable'}${override(p)}`), onSuccess: () => { done('Policy updated')(); setOverriding(null) }, onError: e => toast.error(e) })
   const clone = useMutation({ mutationFn: (p: Policy) => api.post(`/policies/${p.id}/clone`), onSuccess: done('Policy cloned (disabled)'), onError: e => toast.error(e) })
-  const del = useMutation({ mutationFn: (p: Policy) => api.del(`/policies/${p.id}`), onSuccess: () => { done('Policy deleted')(); setDeleting(null) }, onError: e => toast.error(e) })
+  const del = useMutation({ mutationFn: (p: Policy) => api.del(`/policies/${p.id}${override(p)}`), onSuccess: () => { done('Policy deleted')(); setDeleting(null) }, onError: e => toast.error(e) })
 
   const summary = (p: Policy) => {
     const who = [...p.principals.ids.map(i => i.slice(0, 10)), ...p.principals.roles.map(r => `role:${r}`)].join(', ') || `all ${p.principals.types.join('/')}`
@@ -55,6 +58,7 @@ function PolicyList({ canWrite, onEdit }: { canWrite: boolean; onEdit: (p: Polic
           return <tr key={p.id} style={p.id === highlight ? { background: '#1c3c6b55' } : undefined}>
             <td><b>{p.name}</b>{p.system && <> <Badge><Lock size={9} />system</Badge></>}{p.scope === 'global' && <> <Badge color="blue">global</Badge></>}
               {p.broad?.length > 0 && p.effect === 'allow' && <> <Badge color="orange">broad</Badge></>}
+              {p.managed_by?.bundle && <> <span title={`Managed by the policy bundle ${p.managed_by.bundle}. Change it in the bundle.`}><Badge color="purple"><Code2 size={9} />{p.managed_by.bundle}</Badge></span></>}
               <div className="muted" style={{ fontSize: 9, marginTop: 3 }}>{p.description}</div></td>
             <td>{p.kind === 'default_deny' ? <DecisionBadge value="DENY" /> : <DecisionBadge value={p.effect} />}</td>
             <td className="mono" style={{ maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis' }}>{p.kind === 'default_deny' ? 'everyone' : s.who}</td>
@@ -62,7 +66,7 @@ function PolicyList({ canWrite, onEdit }: { canWrite: boolean; onEdit: (p: Polic
             <td>{p.actions?.join(', ')}</td>
             <td>{c.require_approval && <Badge color="purple">approval</Badge>} {c.environments?.length > 0 && <Badge>{c.environments.join('/')}</Badge>} {c.time_windows?.length > 0 && <Badge>time window</Badge>} {c.source_cidrs?.length > 0 && <Badge>network</Badge>} {(c.max_calls_per_minute || c.max_calls_per_hour || c.max_calls_per_day) && <Badge>rate</Badge>}</td>
             <td>{p.priority}</td>
-            <td><Switch on={p.enabled} disabled={!canWrite || locked || toggle.isPending} onChange={() => toggle.mutate(p)} label="Enabled" /></td>
+            <td><Switch on={p.enabled} disabled={!canWrite || locked || toggle.isPending} onChange={() => p.managed_by?.bundle ? setOverriding(p) : toggle.mutate(p)} label="Enabled" /></td>
             <td><div className="row-actions">
               <button className="small-btn" title="History" onClick={() => setHistory(p)}><History size={11} /></button>
               {canWrite && !locked && <button className="small-btn" title="Edit" onClick={() => onEdit(p)}><Pencil size={11} /></button>}
@@ -74,8 +78,12 @@ function PolicyList({ canWrite, onEdit }: { canWrite: boolean; onEdit: (p: Polic
       </table></div>}
     </QueryState>
     {deleting && <Confirm danger title="Delete policy" confirmLabel="Delete" busy={del.isPending}
-      message={<>Delete <b>{deleting.name}</b>? Access granted by it ends immediately. Its history stays in the audit log.</>}
+      message={<>Delete <b>{deleting.name}</b>? Access granted by it ends immediately. Its history stays in the audit log.
+        {deleting.managed_by?.bundle && <> It is managed by the bundle <b>{deleting.managed_by.bundle}</b>: the next apply of that bundle creates it again.</>}</>}
       onConfirm={() => del.mutate(deleting)} onClose={() => setDeleting(null)} />}
+    {overriding && <Confirm title={`${overriding.enabled ? 'Disable' : 'Enable'} a policy managed by code`} confirmLabel={overriding.enabled ? 'Disable anyway' : 'Enable anyway'} busy={toggle.isPending}
+      message={<><b>{overriding.name}</b> is managed by the policy bundle <b>{overriding.managed_by?.bundle}</b>. The change takes effect now, but the next apply of the bundle reverts it. To make it permanent, change the bundle. The override is recorded in the audit log.</>}
+      onConfirm={() => toggle.mutate(overriding)} onClose={() => setOverriding(null)} />}
     {history && <PolicyHistory policy={history} onClose={() => setHistory(null)} />}
   </Panel>
 }

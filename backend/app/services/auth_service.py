@@ -38,9 +38,13 @@ class AuthService:
         self.audit = audit
 
     # ------------------------------------------------------------------ rate limiting
+    @staticmethod
+    def _throttle_key(key: str) -> str:
+        return f"authrl:{hashlib.sha256(key.encode()).hexdigest()[:32]}"
+
     async def _throttle(self, key: str, limit: int, window: int) -> None:
         try:
-            k = f"authrl:{hashlib.sha256(key.encode()).hexdigest()[:32]}"
+            k = self._throttle_key(key)
             count = await self.redis.incr(k)
             if count == 1:
                 await self.redis.expire(k, window)
@@ -55,10 +59,11 @@ class AuthService:
     # ------------------------------------------------------------------ users
     async def login(self, username: str, password: str, source_ip: str, tenant_id: str | None) -> dict[str, Any]:
         uname = username.strip().lower()
-        await self._throttle(
-            f"login:{uname}:{source_ip}", self.settings.login_max_attempts_per_window,
-            self.settings.login_window_seconds,
-        )
+        throttle_key = f"login:{uname}:{source_ip}"
+        # Counted up front (atomic, so parallel guesses are capped too); a successful sign-in returns its slot
+        # below, so only failures accumulate and automation that signs in often is not locked out.
+        await self._throttle(throttle_key, self.settings.login_max_attempts_per_window,
+                             self.settings.login_window_seconds)
         user = await self.repos.users.by_username(uname)
         ok = verify_password(password, user.get("password_hash") if user else None)
         if not ok or not user or user.get("status") != "active":
@@ -70,6 +75,10 @@ class AuthService:
             raise GatewayError(ErrorCode.INVALID_CREDENTIAL, "Invalid username or password.")
         assert user is not None
         await self._check_local_login_allowed(user, source_ip)
+        try:
+            await self.redis.decr(self._throttle_key(throttle_key))
+        except Exception:  # noqa: BLE001, S110 - the slot simply expires with the window
+            pass
         if password_needs_rehash(user["password_hash"]):
             await self.repos.users.update(user["_id"], {"password_hash": hash_password(password)})
         return await self.create_session(user, source_ip, tenant_id, method="password")

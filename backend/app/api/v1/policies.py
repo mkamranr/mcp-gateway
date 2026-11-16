@@ -4,13 +4,15 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, Query, Response
+from fastapi.responses import PlainTextResponse
 
 from app.api.deps import get_container, page_params, require_user
 from app.container import Container
 from app.core.errors import GatewayError, not_found
 from app.core.identity import SECURITY, Principal
 from app.models.policy import PolicyCreate, PolicyUpdate, SimulateRequest, policy_to_api
+from app.models.policy_bundle import BundleApplyRequest, BundleRequest
 from app.services.policy_service import RequestContext
 
 router = APIRouter(prefix="/policies", tags=["policies"])
@@ -27,6 +29,34 @@ async def list_policies(page: dict[str, Any] = Depends(page_params), p: Principa
 async def create_policy(body: PolicyCreate, p: Principal = Depends(require_user(*SECURITY)),
                         c: Container = Depends(get_container)) -> dict[str, Any]:
     return policy_to_api(await c.policy.create(p, body))
+
+
+# ---------------- policy-as-code (declared before /{policy_id} so "bundle" is never read as an id) ----------------
+@router.get("/bundle/export", response_class=PlainTextResponse)
+async def export_bundle(bundle: str = Query(default="exported", pattern=r"^[a-z0-9][a-z0-9._-]{0,62}$"),
+                        scope: str = Query(default="tenant", pattern="^(tenant|global)$"),
+                        include: str = Query(default="all", pattern="^(all|bundle)$"),
+                        p: Principal = Depends(require_user(*SECURITY, "auditor")),
+                        c: Container = Depends(get_container)) -> PlainTextResponse:
+    """Current policies as a bundle (YAML). ``include=bundle`` exports only the policies owned by ``bundle``."""
+    text = await c.policy_bundles.export(p, scope=scope, bundle=bundle, include=include)
+    return PlainTextResponse(text, media_type="application/yaml",
+                             headers={"Content-Disposition": f'attachment; filename="{bundle}.policies.yaml"'})
+
+
+@router.post("/bundle/plan")
+async def plan_bundle(body: BundleRequest, prune: bool = False,
+                      p: Principal = Depends(require_user(*SECURITY, "developer", "auditor")),
+                      c: Container = Depends(get_container)) -> dict[str, Any]:
+    """Validate a bundle and show exactly what apply would change. Changes nothing."""
+    return c.policy_bundles.public_plan(await c.policy_bundles.plan(p, body.content, prune=prune))
+
+
+@router.post("/bundle/apply")
+async def apply_bundle(body: BundleApplyRequest, p: Principal = Depends(require_user(*SECURITY)),
+                       c: Container = Depends(get_container)) -> dict[str, Any]:
+    return await c.policy_bundles.apply(p, body.content, expected_fingerprint=body.expected_fingerprint,
+                                        prune=body.prune)
 
 
 @router.post("/simulate")
@@ -98,22 +128,25 @@ async def update_policy(policy_id: str, body: PolicyUpdate, p: Principal = Depen
 
 
 @router.delete("/{policy_id}", status_code=204)
-async def delete_policy(policy_id: str, p: Principal = Depends(require_user(*SECURITY)),
+async def delete_policy(policy_id: str, confirm_managed_override: bool = False,
+                        p: Principal = Depends(require_user(*SECURITY)),
                         c: Container = Depends(get_container)) -> Response:
-    await c.policy.delete(p, policy_id)
+    await c.policy.delete(p, policy_id, confirm_managed_override)
     return Response(status_code=204)
 
 
 @router.post("/{policy_id}/enable")
-async def enable_policy(policy_id: str, p: Principal = Depends(require_user(*SECURITY)),
+async def enable_policy(policy_id: str, confirm_managed_override: bool = False,
+                        p: Principal = Depends(require_user(*SECURITY)),
                         c: Container = Depends(get_container)) -> dict[str, Any]:
-    return policy_to_api(await c.policy.set_enabled(p, policy_id, True))
+    return policy_to_api(await c.policy.set_enabled(p, policy_id, True, confirm_managed_override))
 
 
 @router.post("/{policy_id}/disable")
-async def disable_policy(policy_id: str, p: Principal = Depends(require_user(*SECURITY)),
+async def disable_policy(policy_id: str, confirm_managed_override: bool = False,
+                         p: Principal = Depends(require_user(*SECURITY)),
                          c: Container = Depends(get_container)) -> dict[str, Any]:
-    return policy_to_api(await c.policy.set_enabled(p, policy_id, False))
+    return policy_to_api(await c.policy.set_enabled(p, policy_id, False, confirm_managed_override))
 
 
 @router.post("/{policy_id}/clone", status_code=201)
