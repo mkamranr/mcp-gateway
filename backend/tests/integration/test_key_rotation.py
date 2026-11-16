@@ -82,3 +82,16 @@ async def test_verify_data_detects_the_wrong_key(admin, mock_idp, upstream_url, 
     bad = await verify(container.db.db, Encryptor(os.urandom(32)))
     assert bad["ciphertexts"]["checked"] == 2 and len(bad["ciphertexts"]["failed"]) == 2
     assert "verify-me" not in str(bad)
+
+
+async def test_rotation_includes_the_siem_credential(admin, container):
+    from app.services.siem_service import SECRET_AAD
+
+    r = await admin.put("/api/v1/siem/config", json={"transport": "http", "url": "https://siem.example/ingest",
+                                                      "http_auth_value": "Bearer siem-rotate-me"})
+    assert r.status_code == 200, r.text
+    old, new = container.encryptor, Encryptor(os.urandom(32))
+    report = await rotate(container.db.db, old, new)
+    assert report.rotated == 1 and not report.failed
+    doc = await container.repos.settings.col.find_one({"key": "siem"})
+    assert new.decrypt(doc["value"]["http_auth_value_enc"], SECRET_AAD) == b"Bearer siem-rotate-me"

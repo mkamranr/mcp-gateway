@@ -136,4 +136,6 @@ Logs pass through a scrubber that redacts sensitive keys, `mgw_` keys and Bearer
 principal (and delegating user), resource, decision, reason code, policy IDs, status, duration, input/output
 hashes, and request/invocation/approval IDs for correlation. When `AUDIT_REQUIRED_FOR_EXECUTION=true` and an
 audit write fails, the call fails with `AUDIT_UNAVAILABLE` before dispatch. Exports are size-capped, guarded
-against CSV formula injection, and audited themselves.
+against CSV formula injection, and audited themselves. Events can also be streamed to a SIEM in near real time
+(at least once, in order, no loss during collector outages; see [siem.md](siem.md)). Shipping them off the
+host is the recommended way to protect the audit trail from a database administrator.

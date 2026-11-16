@@ -109,3 +109,4 @@ pre.code{background:var(--bg);border:1px solid var(--border);border-radius:8px;p
 .rule-row .check{display:inline-flex;align-items:center;gap:5px;font-size:10px;white-space:nowrap}
 .rule-row .check input{width:auto;margin:0}
 @media(max-width:720px){.rule-row{grid-template-columns:1fr}.rule-row>.small-btn{justify-self:end}}
+.error-text{color:var(--red,#ef4444)}

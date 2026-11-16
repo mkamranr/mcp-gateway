@@ -161,3 +161,16 @@ export interface Overview {
   health: HealthComponent[]
   approvals: { pending: number; oldest_pending_age_seconds: number }
 }
+
+export interface SiemConfig {
+  enabled: boolean; transport: 'syslog_tcp' | 'syslog_tls' | 'syslog_udp' | 'http'
+  host: string; port: number; syslog_facility: number
+  url: string; http_body: 'ndjson' | 'json_array' | 'splunk_hec'; http_auth_header: string
+  format: 'json' | 'cef'; min_severity: 'info' | 'warning' | 'high' | 'critical'; event_types: string[]
+  tls_ca_pem: string; tls_verify_hostname: boolean; batch_size: number
+  has_http_auth_value: boolean; updated_at: string | null; updated_by: string | null
+}
+export interface SiemStatus {
+  enabled: boolean; cursor: string | null; lag_seconds: number | null; pending_events: number | null
+  forwarded_total: number; last_success_at: string | null; last_error: string | null; last_error_at: string | null; failing: boolean
+}

@@ -23,6 +23,9 @@ actions, and records an append-only audit trail. Built for on-premises and air-g
 - **Single sign-on (OIDC).** One platform-wide IdP (Keycloak, Entra ID, AD FS and others). Authorization code
   flow with PKCE. Accounts are created just-in-time. IdP groups map to tenant roles and are re-synced at every
   sign-in. Local password sign-in can be limited to break-glass administrators. See [docs/sso.md](docs/sso.md).
+- **SIEM forwarding.** Audit events streamed to syslog (TLS, TCP, UDP) or an HTTP collector (Splunk HEC and
+  others) as JSON or CEF. Delivery is at least once, in order, with no loss during collector outages. See
+  [docs/siem.md](docs/siem.md).
 - **Default-deny policy engine.** Allow/deny policies over principals, servers, tools, risk levels and actions.
   Conditions cover environment, time window, source CIDR and rate. Deny overrides allow. Wildcard grants need
   explicit confirmation. Includes a simulator and version history.
@@ -113,5 +116,5 @@ weekly updates for uv, npm, Actions and base images.
 [Architecture](docs/architecture.md) · [Security model](docs/security-model.md) ·
 [Threat model](docs/threat-model.md) · [API reference](docs/api-reference.md) ·
 [MCP client configuration](docs/mcp-client-configuration.md) · [Deployment](docs/deployment.md) ·
-[Air-gapped installation](docs/air-gapped-installation.md) · [Single sign-on](docs/sso.md) · [Operations & runbooks](docs/operations.md) ·
+[Air-gapped installation](docs/air-gapped-installation.md) · [Single sign-on](docs/sso.md) · [SIEM forwarding](docs/siem.md) · [Operations & runbooks](docs/operations.md) ·
 [Security policy](SECURITY.md) · [Contributing](CONTRIBUTING.md)

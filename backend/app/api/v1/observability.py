@@ -261,6 +261,14 @@ async def metrics(p: Principal = Depends(require_user("platform_admin", "securit
     servers = await c.repos.servers.find_all(t, {"archived": {"$ne": True}})
     for s in servers:
         lines.append(f'mgw_upstream_healthy{{server="{s["alias"]}"}} {1 if s.get("health_status") == "healthy" else 0}')
+    siem = await c.siem.status() if p.is_global_admin else {"enabled": False}  # platform-level state
+    if siem["enabled"]:
+        lines += ["# HELP mgw_siem_up 1 if the last SIEM forwarding attempt succeeded", "# TYPE mgw_siem_up gauge",
+                  f"mgw_siem_up {0 if siem['failing'] else 1}",
+                  "# TYPE mgw_siem_forwarded_events counter", f"mgw_siem_forwarded_events {siem['forwarded_total']}",
+                  "# HELP mgw_siem_lag_seconds Age of the newest audit event already forwarded",
+                  "# TYPE mgw_siem_lag_seconds gauge", f"mgw_siem_lag_seconds {siem['lag_seconds'] or 0}",
+                  "# TYPE mgw_siem_pending_events gauge", f"mgw_siem_pending_events {siem['pending_events'] or 0}"]
     return "\n".join(lines) + "\n"
 
 

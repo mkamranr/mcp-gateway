@@ -1,4 +1,5 @@
-"""Background worker: approved executions, approval expiry, upstream health checks, audit retention.
+"""Background worker: approved executions, approval expiry, upstream health checks, audit retention,
+SIEM forwarding.
 
 Run with ``python -m app.workers.main``. It shares the application modules with the API but
 runs as a separate process, so long tool calls never occupy web workers.
@@ -24,6 +25,7 @@ log = get_logger("worker")
 
 RETENTION_INTERVAL_SECONDS = 6 * 3600
 MIN_RETENTION_DAYS = 30
+SIEM_INTERVAL_SECONDS = 2
 
 
 class Worker:
@@ -31,6 +33,7 @@ class Worker:
         self.c = container
         self.name = f"{socket.gethostname()}-{os.getpid()}"
         self._stop = asyncio.Event()
+        self._siem_task: asyncio.Task[int] | None = None
 
     def stop(self) -> None:
         self._stop.set()
@@ -99,6 +102,13 @@ class Worker:
             log.info("worker.retention", deleted=total)
         return total
 
+    async def siem_once(self) -> int:
+        try:
+            return await self.c.siem.forward_once(self.name)
+        except Exception as exc:  # noqa: BLE001 - forwarding problems must never stop the worker
+            log.error("worker.siem_error", error=type(exc).__name__)
+            return 0
+
     async def health_checks_once(self) -> None:
         servers = [s async for s in self.c.repos.servers.col.find({"enabled": True, "archived": {"$ne": True}})]
         for s in servers:
@@ -109,7 +119,7 @@ class Worker:
 
     async def run(self) -> None:
         await self.ensure_group()
-        last_maint = last_health = 0.0
+        last_maint = last_health = last_siem = 0.0
         last_retention = float("-inf")  # run once at startup, then every RETENTION_INTERVAL_SECONDS
         loop = asyncio.get_running_loop()
         log.info("worker.started", name=self.name)
@@ -125,6 +135,9 @@ class Worker:
                 if now - last_health >= self.c.settings.health_check_interval_seconds:
                     asyncio.create_task(self.health_checks_once())  # noqa: RUF006
                     last_health = now
+                if now - last_siem >= SIEM_INTERVAL_SECONDS and (self._siem_task is None or self._siem_task.done()):
+                    self._siem_task = asyncio.create_task(self.siem_once())  # never blocks approval jobs
+                    last_siem = now
                 await self.process_jobs_once(block_ms=int(self.c.settings.worker_poll_interval_seconds * 1000))
             except Exception as exc:  # noqa: BLE001
                 log.error("worker.loop_error", error=type(exc).__name__)

@@ -38,6 +38,10 @@ Roles: P = platform_admin, T = tenant_admin, S = security_admin, A = approver, U
 | GET | `/sso/config` | P | SSO configuration. Returns `has_client_secret` and `redirect_uri`, never the secret. |
 | PUT | `/sso/config` | P | Full configuration. `client_secret`: omit to keep, `""` to clear. Audited (`sso.config.updated`). |
 | POST | `/sso/test` | P | Discovery and JWKS check of the saved configuration |
+| GET | `/siem/config` | P | SIEM forwarding configuration. Returns `has_http_auth_value`, never the value. |
+| PUT | `/siem/config` | P | Full configuration. `http_auth_value`: omit to keep, `""` to clear. Audited (`siem.config.updated`). |
+| GET | `/siem/status` | P | Forwarded count, pending events, lag, last success and last error |
+| POST | `/siem/test` | P | Sends one `siem.test` event using the saved settings |
 | POST | `/auth/agent-keys` | P T S | `{agent_id, name, scopes[], expires_at?}` → includes `secret` **once** |
 | GET | `/auth/agent-keys?agent_id=` | any | never includes secrets or hashes |
 | POST | `/auth/agent-keys/{id}/rotate` | P T S | new key (secret once). The old key is revoked. |
