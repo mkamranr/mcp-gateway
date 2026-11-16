@@ -93,6 +93,7 @@ class Worker:
         await self.c.redis.zadd(HEARTBEAT_KEY, {self.host: time.time()})
         await self.c.redis.zremrangebyscore(HEARTBEAT_KEY, "-inf", time.time() - 24 * 3600)  # long-gone hosts
         expired = await self.c.approvals.expire_due()
+        await self.c.invocations.release_stale_claims()  # returned claims are APPROVED again and re-queued below
         requeued = await self.c.approvals.requeue_stuck()
         # Each request is claimed with a compare-and-set, so several workers can sweep at once safely.
         escalated = await self.c.approvals.escalate_due()

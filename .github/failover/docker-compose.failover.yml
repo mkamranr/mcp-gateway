@@ -1,0 +1,136 @@
+# Failover test topology (CI job "failover"), layered on docker-compose.yml:
+#
+#   COMPOSE_FILE=docker-compose.yml:.github/failover/docker-compose.failover.yml docker compose up -d --wait
+#
+# - MongoDB: three-member replica set rs0 with keyfile authentication; the gateway uses w=majority.
+# - Redis: a master with two replicas and three Sentinels; the gateway discovers the master through them.
+# - mock-upstream: the development mock MCP server, so approved calls have something to execute.
+#
+# The test kills the MongoDB primary and then the Redis master under load. It is a test fixture, not a
+# production layout: in production put each member on its own host (docs/high-availability.md).
+
+x-mongo-member: &mongo-member
+  image: mongo:7.0.14
+  # mongod insists the keyfile is private to its user: copy the secret with the right owner and mode first.
+  entrypoint: ["sh", "-c", "install -m 400 -o 999 -g 999 /run/secrets/mongo_keyfile /tmp/keyfile && exec docker-entrypoint.sh mongod --replSet rs0 --keyFile /tmp/keyfile --bind_ip_all --quiet"]
+  secrets: [mongo_root_password, mongo_keyfile]
+  healthcheck:
+    test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+    interval: 5s
+    timeout: 5s
+    retries: 30
+    start_period: 20s
+  cap_drop: [ALL]
+  cap_add: [SETUID, SETGID, CHOWN, DAC_OVERRIDE, FOWNER]
+  security_opt: ["no-new-privileges:true"]
+  networks: [backend]
+
+x-redis-node: &redis-node
+  image: redis:7.4.1-alpine
+  user: "redis"
+  secrets: [redis_password]
+  healthcheck:
+    test: ["CMD-SHELL", "redis-cli -a \"$$(cat /run/secrets/redis_password)\" --no-auth-warning ping | grep -q PONG"]
+    interval: 5s
+    timeout: 5s
+    retries: 20
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  networks: [backend]
+
+x-sentinel: &sentinel
+  image: redis:7.4.1-alpine
+  user: "redis"
+  secrets: [redis_password]
+  # Sentinel rewrites its configuration file, so it is generated into /tmp at start.
+  entrypoint: ["sh", "-c", "printf 'port 26379\\nsentinel resolve-hostnames yes\\nsentinel monitor mgw redis 6379 2\\nsentinel auth-pass mgw %s\\nsentinel down-after-milliseconds mgw 3000\\nsentinel failover-timeout mgw 10000\\nsentinel parallel-syncs mgw 1\\n' \"$$(cat /run/secrets/redis_password)\" > /tmp/sentinel.conf && exec redis-server /tmp/sentinel.conf --sentinel"]
+  healthcheck:
+    test: ["CMD", "redis-cli", "-p", "26379", "ping"]
+    interval: 5s
+    timeout: 5s
+    retries: 20
+  depends_on:
+    redis: { condition: service_healthy }
+    redis-2: { condition: service_healthy }
+    redis-3: { condition: service_healthy }
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  networks: [backend]
+
+x-sentinel-client: &sentinel-client
+  REDIS_SENTINELS: sentinel-1:26379,sentinel-2:26379,sentinel-3:26379
+  REDIS_SENTINEL_MASTER: mgw
+
+x-ha-deps: &ha-deps
+  mongo-init: { condition: service_completed_successfully }
+  sentinel-1: { condition: service_healthy }
+  sentinel-2: { condition: service_healthy }
+  sentinel-3: { condition: service_healthy }
+
+services:
+  gateway-api:
+    environment: *sentinel-client
+    depends_on: *ha-deps
+
+  worker:
+    environment: *sentinel-client
+    depends_on: *ha-deps
+
+  # Member 1 also creates the root user on first start (the image's init runs before the replica set exists).
+  mongodb:
+    <<: *mongo-member
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: mgw_root
+      MONGO_INITDB_ROOT_PASSWORD_FILE: /run/secrets/mongo_root_password
+  mongodb-2: *mongo-member
+  mongodb-3: *mongo-member
+
+  mongo-init:
+    image: mongo:7.0.14
+    secrets: [mongo_root_password]
+    environment:
+      INIT_JS: >-
+        try { rs.status() } catch (e) {
+          rs.initiate({_id: 'rs0', members: [
+            {_id: 0, host: 'mongodb:27017'}, {_id: 1, host: 'mongodb-2:27017'}, {_id: 2, host: 'mongodb-3:27017'}]})
+        }
+        while (!db.hello().primary) { sleep(500) }
+        print('replica set ready, primary ' + db.hello().primary)
+    # Retries until member 1 has finished creating the root user and restarted with --replSet.
+    entrypoint: ["sh", "-c", "for i in $$(seq 1 60); do mongosh --quiet --host mongodb -u mgw_root -p \"$$(cat /run/secrets/mongo_root_password)\" --authenticationDatabase admin --eval \"$$INIT_JS\" && exit 0; sleep 2; done; exit 1"]
+    depends_on:
+      mongodb: { condition: service_healthy }
+      mongodb-2: { condition: service_healthy }
+      mongodb-3: { condition: service_healthy }
+    restart: "no"
+    networks: [backend]
+
+  # Master at start. min-replicas-to-write 1 makes a master cut off from every replica stop accepting writes,
+  # so writes can't be lost on the wrong side of a partition; two replicas keep writes possible after a failover.
+  redis:
+    <<: *redis-node
+    entrypoint: ["sh", "-c", "pw=\"$$(cat /run/secrets/redis_password)\"; exec redis-server --requirepass \"$$pw\" --masterauth \"$$pw\" --appendonly yes --appendfsync everysec --min-replicas-to-write 1 --min-replicas-max-lag 10 --protected-mode yes --maxmemory 512mb --maxmemory-policy noeviction"]
+  redis-2: &redis-replica
+    <<: *redis-node
+    entrypoint: ["sh", "-c", "pw=\"$$(cat /run/secrets/redis_password)\"; exec redis-server --replicaof redis 6379 --requirepass \"$$pw\" --masterauth \"$$pw\" --appendonly yes --appendfsync everysec --min-replicas-to-write 1 --min-replicas-max-lag 10 --protected-mode yes --maxmemory 512mb --maxmemory-policy noeviction"]
+    depends_on:
+      redis: { condition: service_healthy }
+  redis-3: *redis-replica
+
+  sentinel-1: *sentinel
+  sentinel-2: *sentinel
+  sentinel-3: *sentinel
+
+  mock-upstream:
+    image: ${MGW_BACKEND_IMAGE:-mcp-gateway/backend:0.1.0}
+    command: ["python", "-m", "devtools.mock_mcp_server", "--host", "0.0.0.0", "--port", "9100"]
+    volumes: ["./backend/devtools:/app/devtools:ro"]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    healthcheck: { disable: true }
+    networks: [frontend]
+
+secrets:
+  mongodb_uri: { file: ./secrets/mongodb_uri_replica_set }
+  mongo_keyfile: { file: ./secrets/mongo_keyfile }

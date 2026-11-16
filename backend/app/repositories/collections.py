@@ -147,6 +147,11 @@ class ApprovalRepository(TenantScopedRepository):
         q = {"status": "APPROVED", "approved_at": {"$lte": older_than}}
         return [d async for d in self.col.find(q, {"_id": 1, "tenant_id": 1}).limit(limit)]
 
+    async def stale_claims_global(self, older_than: datetime, limit: int = 100) -> list[dict[str, Any]]:
+        """Privileged: claims whose worker went quiet (used by the stale-claim sweep)."""
+        q = {"status": {"$in": ["REVALIDATING", "EXECUTING"]}, "updated_at": {"$lte": older_than}}
+        return [d async for d in self.col.find(q, {"_id": 1, "tenant_id": 1, "status": 1, "updated_at": 1}).limit(limit)]
+
     async def due_global(self, at_field: str, done_field: str, now: datetime, limit: int = 200) -> list[dict[str, Any]]:
         """Privileged: pending requests whose escalation or reminder point has passed and not yet been handled."""
         q = {"status": "PENDING", at_field: {"$lte": now}, done_field: None}

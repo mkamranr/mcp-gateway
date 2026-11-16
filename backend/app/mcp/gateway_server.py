@@ -18,7 +18,7 @@ from pydantic import TypeAdapter
 from starlette.types import Receive, Scope, Send
 
 from app.container import Container
-from app.core.errors import ErrorCode, GatewayError
+from app.core.errors import ErrorCode, GatewayError, dependency_unavailable
 from app.core.identity import Principal
 from app.core.logging import get_logger, request_id_var
 from app.services.invocation_service import InvocationContext
@@ -101,6 +101,10 @@ def build_gateway(container: Container) -> tuple[Server[Any], StreamableHTTPSess
         except GatewayError as exc:
             return _error_result(exc)
         except Exception as exc:  # noqa: BLE001
+            dep = dependency_unavailable(exc)
+            if dep:
+                log.warning("mcp.dependency_unavailable", error=type(exc).__name__)
+                return _error_result(dep)
             log.error("mcp.call_failed", error=type(exc).__name__)
             return _error_result(GatewayError(ErrorCode.GATEWAY_INTERNAL_ERROR))
         if out.status == "pending_approval":

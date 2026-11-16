@@ -287,3 +287,86 @@ jobs:
       - name: Tear down
         if: always()
         run: docker compose down -v
+
+  failover:
+    name: Failover (MongoDB replica set, Redis Sentinel)
+    needs: [backend, frontend]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      COMPOSE_FILE: docker-compose.yml:.github/failover/docker-compose.failover.yml
+      BASE: http://127.0.0.1:8088
+      CHECK: python3 .github/scripts/failover_check.py
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Secrets, configuration and images
+        run: |
+          sh deploy/scripts/generate-secrets.sh
+          cp .env.example .env
+          openssl rand -base64 756 > secrets/mongo_keyfile
+          pw="$(cat secrets/mongo_root_password)"
+          printf 'mongodb://mgw_root:%s@mongodb:27017,mongodb-2:27017,mongodb-3:27017/?replicaSet=rs0&authSource=admin&w=majority&retryWrites=true&readPreference=primary' "$pw" > secrets/mongodb_uri_replica_set
+          docker compose build gateway-api web-ui
+          docker compose pull mongodb redis
+      - name: Start (3-member replica set, master + 2 replicas, 3 sentinels)
+        run: |
+          docker compose up -d --no-build --pull never --wait --wait-timeout 300
+          docker compose ps
+          $CHECK setup "$BASE" secrets/bootstrap_admin_password /tmp/state.json
+          for s in gateway-api worker; do docker inspect -f '{{.RestartCount}}' "$(docker compose ps -q $s)"; done > /tmp/restarts-before
+      - name: Kill the MongoDB primary under load
+        run: |
+          mongo_eval() {  # run on whichever member is still up
+            for m in mongodb mongodb-2 mongodb-3; do
+              out="$(docker compose exec -T "$m" mongosh --quiet -u mgw_root -p "$(cat secrets/mongo_root_password)" \
+                --authenticationDatabase admin --eval "$1" 2>/dev/null)" && { echo "$out"; return 0; }
+            done; return 1
+          }
+          primary="$(mongo_eval 'db.hello().primary')"; primary="${primary%%:*}"
+          echo "primary: $primary"
+          $CHECK load "$BASE" /tmp/state.json 75 /tmp/mongo-load.json &
+          load=$!
+          sleep 10
+          $CHECK approvals "$BASE" /tmp/state.json 3 /tmp/mongo-approvals.json
+          docker compose kill "$primary"
+          wait "$load"
+          new="$(mongo_eval 'db.hello().primary')"; echo "new primary: $new"
+          [ -n "$new" ] && [ "${new%%:*}" != "$primary" ] || { echo "::error::no new primary"; exit 1; }
+          $CHECK verify "$BASE" /tmp/state.json /tmp/mongo-load.json /tmp/mongo-approvals.json
+          docker compose start "$primary"
+          for i in $(seq 1 30); do
+            state="$(mongo_eval "rs.status().members.filter(m => m.name.startsWith('$primary:'))[0].stateStr")"
+            [ "$state" = SECONDARY ] && break; sleep 2
+          done
+          echo "old primary rejoined as: $state"; [ "$state" = SECONDARY ]
+      - name: Kill the Redis master under load
+        run: |
+          addr="$(docker compose exec -T sentinel-1 redis-cli -p 26379 SENTINEL get-master-addr-by-name mgw | head -1)"
+          master=""
+          for s in redis redis-2 redis-3; do
+            ip="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$(docker compose ps -q $s)")"
+            [ "$addr" = "$s" ] || [ "$addr" = "$ip" ] && master="$s"
+          done
+          echo "master: $master ($addr)"; [ -n "$master" ]
+          $CHECK load "$BASE" /tmp/state.json 75 /tmp/redis-load.json &
+          load=$!
+          sleep 10
+          $CHECK approvals "$BASE" /tmp/state.json 3 /tmp/redis-approvals.json
+          docker compose kill "$master"
+          wait "$load"
+          new="$(docker compose exec -T sentinel-2 redis-cli -p 26379 SENTINEL get-master-addr-by-name mgw | head -1)"
+          echo "new master: $new"; [ -n "$new" ] && [ "$new" != "$addr" ]
+          $CHECK verify "$BASE" /tmp/state.json /tmp/redis-load.json /tmp/redis-approvals.json
+          docker compose start "$master"
+      - name: The gateway survived both failovers without restarting
+        run: |
+          for s in gateway-api worker; do docker inspect -f '{{.RestartCount}}' "$(docker compose ps -q $s)"; done > /tmp/restarts-after
+          diff /tmp/restarts-before /tmp/restarts-after || { echo "::error::a gateway process restarted"; exit 1; }
+          $CHECK login "$BASE" secrets/bootstrap_admin_password
+          curl -fsS "$BASE/health/ready"
+      - name: Logs
+        if: always()
+        run: docker compose logs --no-color --tail=300
+      - name: Tear down
+        if: always()
+        run: docker compose down -v

@@ -12,7 +12,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from app.core.errors import ErrorCode, GatewayError
+from app.core.errors import DEPENDENCY_ERRORS, ErrorCode, GatewayError, dependency_unavailable
 from app.core.logging import get_logger, request_id_var
 
 log = get_logger(__name__)
@@ -126,6 +126,15 @@ def install_error_handlers(app: FastAPI) -> None:
                 403: ErrorCode.ACCESS_DENIED}.get(exc.status_code, ErrorCode.GATEWAY_INTERNAL_ERROR)
         msg = "Not found." if exc.status_code == 404 else str(exc.detail)[:200]
         return JSONResponse(_envelope(code, msg, request_id_var.get()), status_code=exc.status_code)
+
+    # MongoDB or Redis unreachable, mid-election or mid-failover: fail closed with a retryable 503. Registered per
+    # class so they are handled like GatewayError, not by the catch-all below.
+    async def dependency_error(request: Request, exc: Exception) -> JSONResponse:
+        log.warning("dependency_unavailable", error=type(exc).__name__, path=request.url.path)
+        return await gateway_error(request, dependency_unavailable(exc) or GatewayError(ErrorCode.DEPENDENCY_UNAVAILABLE))
+
+    for cls in DEPENDENCY_ERRORS:
+        app.add_exception_handler(cls, dependency_error)
 
     @app.exception_handler(Exception)
     async def unhandled(request: Request, exc: Exception) -> JSONResponse:

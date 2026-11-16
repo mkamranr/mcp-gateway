@@ -17,7 +17,7 @@ from typing import Any
 
 from app.config import Settings
 from app.core.crypto import Encryptor
-from app.core.errors import ErrorCode, GatewayError
+from app.core.errors import DEPENDENCY_ERRORS, ErrorCode, GatewayError, dependency_unavailable
 from app.core.identity import Principal
 from app.core.ids import new_id, sha256_hex, utcnow
 from app.core.logging import get_logger, request_id_var
@@ -110,9 +110,29 @@ class InvocationService:
 
     # ------------------------------------------------------------------ invocation
     async def invoke(
-        self, principal: Principal, gateway_name: str, arguments: Any, ctx: InvocationContext | None = None
+        self, principal: Principal, gateway_name: str, arguments: Any, ctx: InvocationContext | None = None,
+        stage: dict[str, bool] | None = None,
     ) -> InvocationOutcome:
-        ctx = ctx or InvocationContext()
+        """Run the full pipeline. ``stage["committed"]`` turns True at the point of no return: just before the
+        dispatch record is written and the upstream is called. A MongoDB or Redis outage before that point is
+        reported as DEPENDENCY_UNAVAILABLE with ``extra["before_dispatch"]`` True, so the caller may retry it."""
+        stage = stage if stage is not None else {}
+        stage.setdefault("committed", False)
+        try:
+            return await self._invoke(principal, gateway_name, arguments, ctx or InvocationContext(), stage)
+        except GatewayError as exc:
+            if exc.code == ErrorCode.DEPENDENCY_UNAVAILABLE:
+                exc.extra["before_dispatch"] = not stage["committed"]
+            raise
+        except DEPENDENCY_ERRORS as exc:
+            err = dependency_unavailable(exc) or GatewayError(ErrorCode.DEPENDENCY_UNAVAILABLE)
+            err.extra["before_dispatch"] = not stage["committed"]
+            log.warning("invocation.dependency_unavailable", error=type(exc).__name__,
+                        before_dispatch=not stage["committed"])
+            raise err from None
+
+    async def _invoke(self, principal: Principal, gateway_name: str, arguments: Any, ctx: InvocationContext,
+                      stage: dict[str, bool]) -> InvocationOutcome:
         inv_id = new_id("inv")
         started = time.perf_counter()
         resource: dict[str, Any] = {"gateway_name": gateway_name[:200]}
@@ -177,6 +197,10 @@ class InvocationService:
         decision = await self.policy.decide(RequestContext(
             principal=principal, action="invoke", server=server, tool=tool, source_ip=ctx.source_ip,
             critical_requires_approval=bool(settings.get("critical_requires_approval", True))))
+        if decision.reason_code == "POLICY_ENGINE_UNAVAILABLE":
+            # Fail closed (audited as DENY / POLICY_ENGINE_UNAVAILABLE), but tell the caller it is temporary.
+            raise await deny(ErrorCode.DEPENDENCY_UNAVAILABLE, "The policy store is temporarily unavailable.",
+                             policy=decision, headers={"Retry-After": "5"})
         if decision.decision == "DENY":
             raise await deny(ErrorCode.ACCESS_DENIED, policy=decision)
 
@@ -234,9 +258,10 @@ class InvocationService:
                 await self.repos.settings.get_value("global_limits")))
             conc_keys = await self.quotas.acquire_concurrency(principal, tool)
         except GatewayError as exc:
-            await self.audit.record(principal.tenant_id, "quota.exceeded", principal=principal,
-                                    invocation_id=inv_id, resource=resource, metadata={**exc.extra,
-                                                                                        "code": exc.code.value})
+            if exc.code != ErrorCode.DEPENDENCY_UNAVAILABLE:  # an unreachable Redis is not an exceeded quota
+                await self.audit.record(principal.tenant_id, "quota.exceeded", principal=principal,
+                                        invocation_id=inv_id, resource=resource, metadata={**exc.extra,
+                                                                                            "code": exc.code.value})
             raise await deny(exc.code, exc.message, policy=decision, headers=exc.headers, **exc.extra) from None
         for w in warnings:
             await self.audit.record(principal.tenant_id, "quota.threshold.warning", principal=principal,
@@ -246,6 +271,8 @@ class InvocationService:
             # 10. dispatch record + audit. Fail closed for sensitive tools if audit is unavailable.
             sensitive = tool.get("risk_level") in SENSITIVE_RISK
             idem = f"approval:{ctx.approval_id}" if ctx.approval_id else None
+            # Point of no return: from here on the call may reach the upstream, so it must never be retried.
+            stage["committed"] = True
             try:
                 await self._record_invocation(principal, inv_id, resource, decision.decision, "dispatched",
                                               args_hash, None, started, ctx, idempotency_key=idem)
@@ -300,6 +327,53 @@ class InvocationService:
                                                         {"revalidating_at": utcnow()})
         if not claimed:
             return "not_claimed"  # someone else claimed it, or the state changed
+        stage = {"committed": False}
+        try:
+            return await self._execute_claimed(tenant_id, approval_id, claimed, stage)
+        except Exception as exc:
+            dep = exc if isinstance(exc, GatewayError) and exc.code == ErrorCode.DEPENDENCY_UNAVAILABLE \
+                else dependency_unavailable(exc)
+            if dep is None or stage["committed"]:
+                raise  # after the point of no return the call is never retried
+            return await self._defer(tenant_id, approval_id, claimed, type(exc).__name__)
+
+    async def _defer(self, tenant_id: str, approval_id: str, claimed: dict[str, Any], reason: str) -> str:
+        """MongoDB or Redis failed before the upstream was called: hand the request back for a later retry.
+
+        Nothing ran, so this is safe. If even this write fails, the stale-claim sweep returns it later."""
+        try:
+            back = await self.repos.approvals.transition(tenant_id, approval_id, ["REVALIDATING", "EXECUTING"],
+                                                         "APPROVED", {"deferred_at": utcnow()})
+            if back:
+                await self.audit.record(tenant_id, "approval.execution.deferred",
+                                        principal={"type": "service", "id": "approval-worker"},
+                                        approval_id=approval_id, invocation_id=claimed.get("invocation_id"),
+                                        reason_code=ErrorCode.DEPENDENCY_UNAVAILABLE.value,
+                                        metadata={"error": reason})
+        except Exception as exc:  # noqa: BLE001
+            log.warning("approval.defer_failed", approval_id=approval_id, error=type(exc).__name__)
+        return "DEFERRED"
+
+    async def release_stale_claims(self, older_than: timedelta = timedelta(minutes=5)) -> int:
+        """Return claims abandoned by a crashed worker (REVALIDATING/EXECUTING) to APPROVED, but only when the
+        approved call was provably never dispatched: no invocation carries its idempotency key."""
+        cutoff, n = utcnow() - older_than, 0
+        for d in await self.repos.approvals.stale_claims_global(cutoff):
+            key = f"approval:{d['_id']}"
+            if await self.repos.invocations.find_one(d["tenant_id"], {"idempotency_key": key}):
+                continue  # it may have reached the upstream: never run it again
+            back = await self.repos.approvals.col.find_one_and_update(
+                {"_id": d["_id"], "tenant_id": d["tenant_id"], "status": d["status"], "updated_at": d["updated_at"]},
+                {"$set": {"status": "APPROVED", "updated_at": utcnow(), "deferred_at": utcnow()}})
+            if back:
+                n += 1
+                await self.audit.record(d["tenant_id"], "approval.execution.deferred",
+                                        principal={"type": "service", "id": "worker"}, approval_id=d["_id"],
+                                        reason_code="STALE_CLAIM", metadata={"from_status": d["status"]})
+        return n
+
+    async def _execute_claimed(self, tenant_id: str, approval_id: str, claimed: dict[str, Any],
+                               stage: dict[str, bool]) -> str:
         actor = {"type": "service", "id": "approval-worker"}
         await self.audit.record(tenant_id, "approval.revalidating", principal=actor, approval_id=approval_id,
                                 invocation_id=claimed.get("invocation_id"))
@@ -320,6 +394,8 @@ class InvocationService:
             await self.auth.revalidate_agent(tenant_id, claimed["agent_id"], claimed.get("credential_id"))
             arguments = self.approvals.decrypt_arguments(claimed)
         except GatewayError as exc:
+            if exc.code == ErrorCode.DEPENDENCY_UNAVAILABLE:
+                raise  # temporary: deferred by execute_approved, not aborted
             return await abort(exc.code.value, exc.message)
         cred = await self.repos.credentials.get(tenant_id, claimed["credential_id"]) if claimed.get(
             "credential_id") else None
@@ -337,15 +413,23 @@ class InvocationService:
         token = request_id_var.set(f"req_apr_{approval_id[-12:]}")
         try:
             outcome = await self.invoke(principal, claimed["gateway_name"], arguments,
-                                        InvocationContext(source="approval_worker", approval_id=approval_id))
+                                        InvocationContext(source="approval_worker", approval_id=approval_id),
+                                        stage=stage)
         except GatewayError as exc:
+            if exc.code == ErrorCode.DEPENDENCY_UNAVAILABLE and not stage["committed"]:
+                raise  # deferred by execute_approved
             if exc.code in (ErrorCode.ACCESS_DENIED, ErrorCode.TOOL_DISABLED, ErrorCode.SERVER_DISABLED,
                             ErrorCode.TOOL_SCHEMA_CHANGED, ErrorCode.APPROVAL_INVALIDATED, ErrorCode.TOOL_NOT_FOUND,
                             ErrorCode.TENANT_SUSPENDED, ErrorCode.TOOL_ARGUMENT_VALIDATION_FAILED,
                             ErrorCode.QUOTA_EXCEEDED, ErrorCode.RATE_LIMIT_EXCEEDED, ErrorCode.APPROVAL_STATE_CONFLICT):
                 return await abort(exc.code.value, exc.message)
+            message = exc.message
+            if exc.code == ErrorCode.DEPENDENCY_UNAVAILABLE:  # past the point of no return
+                message = ("The call was sent to the upstream, but its outcome could not be recorded because a "
+                           "database was unavailable. It is not retried. Check the upstream system before "
+                           "requesting it again.")
             await self.repos.approvals.transition(tenant_id, approval_id, "EXECUTING", "FAILED", {
-                "completed_at": utcnow(), "execution": {"error_code": exc.code.value, "message": exc.message}})
+                "completed_at": utcnow(), "execution": {"error_code": exc.code.value, "message": message}})
             await self.repos.invocations.update(tenant_id, claimed["invocation_id"], {"status": "failed",
                                                                                      "error_code": exc.code.value})
             return "FAILED"

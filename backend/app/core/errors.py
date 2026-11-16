@@ -128,3 +128,27 @@ def not_found(what: str = "Resource") -> GatewayError:
 
 def denied(message: str = "Access denied.") -> GatewayError:
     return GatewayError(ErrorCode.ACCESS_DENIED, message)
+
+
+# A database or cache that is unreachable, mid-election or mid-failover. These fail closed with a retryable 503
+# (DEPENDENCY_UNAVAILABLE) rather than surfacing as an internal error.
+def _dependency_errors() -> tuple[type[Exception], ...]:
+    from pymongo.errors import ConnectionFailure, WaitQueueTimeoutError
+    from redis.exceptions import ConnectionError as RedisConnectionError
+    from redis.exceptions import ReadOnlyError
+    from redis.exceptions import TimeoutError as RedisTimeoutError
+
+    # ConnectionFailure covers AutoReconnect, NotPrimaryError, NetworkTimeout and ServerSelectionTimeoutError.
+    # ReadOnlyError is a write that reached a Redis master that was just demoted to a replica.
+    return (ConnectionFailure, WaitQueueTimeoutError, RedisConnectionError, RedisTimeoutError, ReadOnlyError)
+
+
+DEPENDENCY_ERRORS = _dependency_errors()
+
+
+def dependency_unavailable(exc: BaseException) -> GatewayError | None:
+    """The fail-closed error for an unavailable MongoDB or Redis, or None if ``exc`` is something else."""
+    if isinstance(exc, DEPENDENCY_ERRORS):
+        return GatewayError(ErrorCode.DEPENDENCY_UNAVAILABLE, "A required service is temporarily unavailable. Retry shortly.",
+                            headers={"Retry-After": "5"})
+    return None
