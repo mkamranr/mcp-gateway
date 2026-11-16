@@ -1,0 +1,160 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UV_VERSION: "0.11.22"
+  PYTHON_VERSION: "3.12"
+  NODE_VERSION: "20.18.1"
+
+jobs:
+  backend:
+    name: Backend (lint, types, tests)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      mongodb:
+        image: mongo:7.0.14
+        ports: ["27017:27017"]
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.adminCommand(\"ping\").ok'"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+      redis:
+        image: redis:7.4.1-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 3s --health-retries 20
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: ${{ env.PYTHON_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+      - run: uv sync --frozen
+      - name: Ruff
+        run: uv run ruff check app devtools tests
+      - name: Mypy
+        run: uv run mypy app
+      - name: Tests (real MongoDB and Redis)
+        env:
+          TEST_MONGODB_URI: mongodb://localhost:27017
+          TEST_REDIS_URL: redis://localhost:6379/0
+        run: uv run pytest tests -q
+
+  frontend:
+    name: Frontend (types, build, offline check)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
+      - name: No external origins in the bundle (air-gap)
+        run: npm run check:offline
+
+  dependency-scan:
+    name: Dependency vulnerability scan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: ${{ env.PYTHON_VERSION }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: pip-audit (locked production dependencies)
+        working-directory: backend
+        run: |
+          uv export --frozen --no-dev --no-emit-project -o "$RUNNER_TEMP/requirements.txt" -q
+          uvx pip-audit==2.10.1 -r "$RUNNER_TEMP/requirements.txt" --disable-pip --strict
+      - name: npm audit (production dependencies, high and above)
+        working-directory: frontend
+        run: npm audit --omit=dev --audit-level=high
+
+  compose-smoke:
+    name: Docker Compose smoke test (no internet egress)
+    needs: [backend, frontend]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Secrets and configuration
+        run: |
+          sh deploy/scripts/generate-secrets.sh
+          cp .env.example .env
+      - name: Build images and pull pinned third-party images (internet allowed here only)
+        run: |
+          docker compose build
+          docker compose pull mongodb redis
+      - name: Block all container egress to public addresses
+        run: |
+          # DOCKER-USER sees forwarded container traffic. Private ranges (container-to-container) stay
+          # allowed; everything else is dropped, so the stack has to start with no internet access.
+          sudo iptables -I DOCKER-USER -j DROP
+          for net in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16; do
+            sudo iptables -I DOCKER-USER -d "$net" -j RETURN
+          done
+          sudo iptables -L DOCKER-USER -n
+      - name: Start the stack offline
+        run: docker compose up -d --no-build --pull never --wait --wait-timeout 300
+      - name: Egress is really blocked
+        run: |
+          if docker compose exec -T gateway-api python -c "import urllib.request; urllib.request.urlopen('https://pypi.org', timeout=8)"; then
+            echo "::error::gateway-api reached the internet; the offline test is not valid"; exit 1
+          fi
+          echo "egress blocked as expected"
+      - name: Only web-ui publishes a host port
+        run: |
+          docker compose ps --format json | python3 -c '
+          import json, sys
+          raw = sys.stdin.read().strip()
+          rows = json.loads(raw) if raw.startswith("[") else [json.loads(l) for l in raw.splitlines() if l.strip()]
+          published = {r["Service"] for r in rows for p in (r.get("Publishers") or []) if p.get("PublishedPort")}
+          unhealthy = [r["Service"] for r in rows if r.get("Health") not in ("healthy", "")]
+          print("services:", sorted(r["Service"] for r in rows), "published:", sorted(published))
+          assert len(rows) == 5, "expected 5 services"
+          assert published == {"web-ui"}, f"unexpected published ports: {published}"
+          assert not unhealthy, f"unhealthy: {unhealthy}"
+          '
+      - name: MongoDB requires authentication
+        run: |
+          if docker compose exec -T mongodb mongosh --quiet --eval 'db.adminCommand({listDatabases:1})'; then
+            echo "::error::MongoDB answered without credentials"; exit 1
+          fi
+      - name: Smoke test through the web-ui proxy
+        run: python3 .github/scripts/compose_smoke.py http://127.0.0.1:8088 secrets/bootstrap_admin_password
+      - name: Logs
+        if: always()
+        run: docker compose logs --no-color --tail=300
+      - name: Tear down
+        if: always()
+        run: docker compose down -v

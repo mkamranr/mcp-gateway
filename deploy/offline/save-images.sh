@@ -29,5 +29,6 @@ mkdir -p "$OUT/deploy" && cp -r deploy/scripts deploy/offline "$OUT/deploy/"
 
 (cd "$OUT" && find . -type f ! -name SHA256SUMS -exec sha256sum {} + | sort -k2 > SHA256SUMS)
 tar -C release -czf "release/mcp-gateway-${VERSION}.tar.gz" "mcp-gateway-${VERSION}"
-sha256sum "release/mcp-gateway-${VERSION}.tar.gz" > "release/mcp-gateway-${VERSION}.tar.gz.sha256"
+# Bare file name, so `sha256sum -c` works wherever the bundle and its .sha256 are copied together.
+(cd release && sha256sum "mcp-gateway-${VERSION}.tar.gz" > "mcp-gateway-${VERSION}.tar.gz.sha256")
 echo "Bundle: release/mcp-gateway-${VERSION}.tar.gz (verify with the .sha256 file after transfer)"

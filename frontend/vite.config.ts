@@ -14,5 +14,18 @@ export default defineConfig({
       '/health': { target, changeOrigin: false },
     },
   },
-  build: { sourcemap: false, chunkSizeWarningLimit: 1200 },
+  build: {
+    sourcemap: false,
+    rollupOptions: {
+      output: {
+        // Long-lived vendor chunks: recharts is only needed by chart pages, react/router/query by everything.
+        manualChunks(id) {
+          if (!id.includes('node_modules')) return undefined
+          if (/recharts|d3-|victory-vendor/.test(id)) return 'charts'
+          if (/react-router|@tanstack|[\\/]react(-dom)?[\\/]|scheduler/.test(id)) return 'vendor'
+          return undefined
+        },
+      },
+    },
+  },
 })

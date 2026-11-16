@@ -1,0 +1,65 @@
+name: Air-gap release bundle
+
+# Builds the offline bundle, then proves the round trip: wipes every image, verifies and loads the
+# bundle the way an air-gapped host would, and starts it with container egress blocked.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Bundle version
+        required: true
+        default: 0.1.0
+
+permissions:
+  contents: read
+
+jobs:
+  bundle:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.11.22"
+          python-version: "3.12"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "20.18.1"
+      - name: SBOMs
+        run: |
+          (cd frontend && npm ci)
+          sh deploy/scripts/sbom.sh
+      - name: Build the bundle
+        run: |
+          sh deploy/offline/save-images.sh "$VERSION"
+          ls -la release
+      - name: Simulate the air-gapped host (no images, no egress)
+        run: |
+          docker compose down -v --rmi all 2>/dev/null || true
+          docker image rm -f $(awk '{print $1}' "release/mcp-gateway-$VERSION/images.txt")
+          sudo iptables -I DOCKER-USER -j DROP
+          for net in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16; do sudo iptables -I DOCKER-USER -d "$net" -j RETURN; done
+          # "Transfer": copy only the bundle and its checksum, exactly as documented.
+          mkdir -p "$RUNNER_TEMP/airgap" && cd "$RUNNER_TEMP/airgap"
+          cp "$GITHUB_WORKSPACE/release/mcp-gateway-$VERSION.tar.gz" "$GITHUB_WORKSPACE/release/mcp-gateway-$VERSION.tar.gz.sha256" .
+          sha256sum -c "mcp-gateway-$VERSION.tar.gz.sha256"
+          tar xzf "mcp-gateway-$VERSION.tar.gz"
+          cd "mcp-gateway-$VERSION"
+          sh deploy/offline/load-images.sh
+          sh deploy/scripts/generate-secrets.sh
+          cp .env.example .env
+          docker compose up -d --no-build --pull never --wait --wait-timeout 300
+          python3 "$GITHUB_WORKSPACE/.github/scripts/compose_smoke.py" http://127.0.0.1:8088 secrets/bootstrap_admin_password
+      - name: Logs
+        if: always()
+        run: cd "$RUNNER_TEMP/airgap/mcp-gateway-$VERSION" 2>/dev/null && docker compose logs --no-color --tail=200 || true
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: mcp-gateway-${{ inputs.version }}
+          path: |
+            release/mcp-gateway-${{ inputs.version }}.tar.gz
+            release/mcp-gateway-${{ inputs.version }}.tar.gz.sha256
+          retention-days: 14
