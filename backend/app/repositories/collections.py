@@ -147,6 +147,16 @@ class ApprovalRepository(TenantScopedRepository):
         q = {"status": "APPROVED", "approved_at": {"$lte": older_than}}
         return [d async for d in self.col.find(q, {"_id": 1, "tenant_id": 1}).limit(limit)]
 
+    async def due_global(self, at_field: str, done_field: str, now: datetime, limit: int = 200) -> list[dict[str, Any]]:
+        """Privileged: pending requests whose escalation or reminder point has passed and not yet been handled."""
+        q = {"status": "PENDING", at_field: {"$lte": now}, done_field: None}
+        return [d async for d in self.col.find(q, {"_id": 1, "tenant_id": 1}).limit(limit)]
+
+
+class ApprovalDelegationRepository(TenantScopedRepository):
+    collection_name = "approval_delegations"
+    id_prefix = "dlg"
+
 
 class InvocationRepository(TenantScopedRepository):
     collection_name = "invocations"
@@ -219,6 +229,7 @@ class Repos:
         self.tool_versions = ToolVersionRepository(db)
         self.policies = PolicyRepository(db)
         self.approvals = ApprovalRepository(db)
+        self.delegations = ApprovalDelegationRepository(db)
         self.invocations = InvocationRepository(db)
         self.audit = AuditRepository(db)
         self.usage = UsageRepository(db)

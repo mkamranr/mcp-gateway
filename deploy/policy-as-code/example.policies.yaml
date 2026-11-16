@@ -38,6 +38,9 @@ policies:
     constraints:
       require_approval: true
       required_approvals: 1
+      escalate_after_minutes: 30           # still pending after 30 min: security admins may decide too
+      escalation_roles: [security_admin]
+      remind_before_expiry_minutes: 15     # approval.expiring event (forwarded to the SIEM)
       max_calls_per_hour: 20
 
   - name: no-deletes-anywhere

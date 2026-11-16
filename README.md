@@ -55,6 +55,8 @@ append-only audit log, before anything reaches the upstream server.
 ### ✅ Human in the loop
 - **Approvals** for sensitive or critical tools: 1 or 2 approvers, separation of duties, expiry, and typed
   confirmation for critical actions.
+- **Always someone to decide.** Time-boxed delegation for absences, approver groups from SSO, escalation of
+  stale requests, and expiry reminders sent to your SIEM.
 - **Tamper-proof requests.** Arguments are bound by SHA-256 hash and AES-GCM encryption; the worker re-checks
   credential, policy and tool state before running the call **exactly once**.
 
@@ -238,7 +240,7 @@ egress blocked, as an air-gapped host would.
 | Design | [Architecture](docs/architecture.md) · [Security model](docs/security-model.md) · [Threat model](docs/threat-model.md) |
 | Integration | [API reference](docs/api-reference.md) · [MCP client configuration](docs/mcp-client-configuration.md) |
 | Deployment | [Deployment](docs/deployment.md) · [Air-gapped installation](docs/air-gapped-installation.md) · [High availability](docs/high-availability.md) |
-| Features | [Single sign-on](docs/sso.md) · [SIEM forwarding](docs/siem.md) · [Policy as code](docs/policy-as-code.md) |
+| Features | [Approvals and delegation](docs/approvals.md) · [Single sign-on](docs/sso.md) · [SIEM forwarding](docs/siem.md) · [Policy as code](docs/policy-as-code.md) |
 | Running it | [Operations and runbooks](docs/operations.md) |
 
 ## Security

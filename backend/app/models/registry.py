@@ -89,6 +89,11 @@ class ApprovalPolicyConfig(Strict):
     ttl_minutes: int = Field(default=60, ge=1, le=10080)
     require_comment_on_reject: bool = True
     require_comment_on_approve: bool = False
+    approver_groups: list[str] = Field(default_factory=list, max_length=50)
+    escalate_after_minutes: int | None = Field(default=None, ge=1, le=10080)
+    escalation_roles: list[Literal["approver", "security_admin", "tenant_admin", "platform_admin"]] = Field(
+        default_factory=list, max_length=4)
+    remind_before_expiry_minutes: int | None = Field(default=None, ge=1, le=10080)
 
 
 class ApprovalConfig(Strict):

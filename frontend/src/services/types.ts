@@ -54,6 +54,8 @@ export interface Server {
 export interface ApprovalPolicyConfig {
   required_approvals: 1 | 2; approver_roles: string[]; allow_self_approval: boolean; ttl_minutes: number
   require_comment_on_reject: boolean; require_comment_on_approve: boolean
+  approver_groups?: string[]; escalate_after_minutes?: number | null; escalation_roles?: string[]
+  remind_before_expiry_minutes?: number | null
 }
 
 export interface Tool {
@@ -77,6 +79,8 @@ export interface PolicyConstraints {
   environments: string[]; max_calls_per_minute: number | null; max_calls_per_hour: number | null
   max_calls_per_day: number | null; require_approval: boolean; required_approvals: 1 | 2 | null
   approver_roles: string[] | null; approval_policy_id: string | null
+  approver_groups: string[] | null; escalate_after_minutes: number | null; escalation_roles: string[] | null
+  remind_before_expiry_minutes: number | null
   time_windows: { days: number[]; start: string; end: string }[]; source_cidrs: string[]
 }
 
@@ -132,13 +136,25 @@ export interface Approval {
   agent_id: string; delegated_by_user_id: string | null; tool_id: string; tool_name: string; gateway_name: string
   server_id: string; server_name: string; risk_level: Risk; purpose: string | null; arguments_hash: string
   arguments_preview: unknown; policy_ids: string[]; approval_policy: Partial<ApprovalPolicyConfig> & { reasons?: string[] }
-  required_approvals: number; approvals: { approver_id: string; approver_name: string; at: string; comment: string }[]
-  rejection: { by_name: string; at: string; comment: string } | null; cancellation: { by: string; reason: string; at: string } | null
+  required_approvals: number
+  approvals: { approver_id: string; approver_name: string; at: string; comment: string; on_behalf_of?: string | null; on_behalf_of_name?: string | null }[]
+  rejection: { by_name: string; at: string; comment: string; on_behalf_of_name?: string | null } | null; cancellation: { by: string; reason: string; at: string } | null
   expires_at: string; approved_at: string | null; executed_at: string | null; completed_at: string | null
   execution: { error_code?: string; message?: string; status?: string } | null; created_at: string
   arguments?: unknown; integrity?: string; changes_since_request?: string[]; related_invocations?: Invocation[]
-  separation_of_duties_warning?: boolean; can_decide?: boolean
+  separation_of_duties_warning?: boolean; can_decide?: boolean; cannot_decide_reason?: string | null
+  decide_as?: { on_behalf_of: string; on_behalf_of_name: string; delegation_id: string } | null
+  escalate_at?: string | null; escalated_at?: string | null
 }
+
+export interface Delegation {
+  id: string; tenant_id: string; status: 'active' | 'scheduled' | 'expired' | 'revoked'
+  delegator_user_id: string; delegator_name: string; delegate_user_id: string; delegate_name: string
+  starts_at: string; ends_at: string; reason: string; created_by: string; created_at: string
+  revoked_at: string | null; revoked_by: string | null
+}
+
+export interface DelegateCandidate { id: string; username: string; display_name: string; can_approve: boolean }
 
 export interface AuditEvent {
   id: string; event_id: string; tenant_id: string; timestamp: string; event_type: string; severity: string

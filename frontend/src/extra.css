@@ -115,3 +115,4 @@ pre.code{background:var(--bg);border:1px solid var(--border);border-radius:8px;p
 .app.light .diff-old{color:#c02f3f}
 .app.light .diff-new{color:#0f8a5f}
 @media (max-width:600px){.panel-head{flex-wrap:wrap}}
+.filters .check{gap:6px;font-size:10px;color:var(--muted)}.filters .check input{min-width:0;padding:0}

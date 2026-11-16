@@ -84,6 +84,10 @@ policies they own. Hand edits of a bundle-owned policy need an explicit override
 - Separation of duties: the requesting principal, and the user who owns the requesting agent, cannot approve.
   Two-person approval needs two **distinct** approvers. Critical tools need `confirm_critical`, which the UI
   collects as typed confirmation. Rejection needs a comment by default.
+- Approval authority can be **delegated** for up to 90 days. The delegate acts with the delegator's current
+  roles and groups, separation of duties is checked against both, one person's authority counts once, and
+  delegations don't chain. Policies can also require approver SSO groups and escalate stale requests to other
+  roles. Details: [approvals](approvals.md).
 - Requests expire (default 60 min, configurable per tool).
 - Execution is claimed atomically (`APPROVED → REVALIDATING`), so it happens at most once even with many
   workers or duplicate jobs. The full pipeline runs again with the **current** credential, tenant, server,

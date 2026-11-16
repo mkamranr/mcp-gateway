@@ -42,6 +42,12 @@ INDEXES: dict[str, list[IndexModel]] = {
         IndexModel([("tenant_id", A), ("expires_at", A)]),
         IndexModel([("status", A), ("expires_at", A)]),
         IndexModel([("tenant_id", A), ("invocation_id", A)]),
+        IndexModel([("status", A), ("escalate_at", A)]),
+        IndexModel([("status", A), ("remind_at", A)]),
+    ],
+    "approval_delegations": [
+        IndexModel([("tenant_id", A), ("delegate_user_id", A), ("ends_at", A)]),
+        IndexModel([("tenant_id", A), ("delegator_user_id", A), ("ends_at", A)]),
     ],
     "invocations": [
         IndexModel([("tenant_id", A), ("created_at", D)]),

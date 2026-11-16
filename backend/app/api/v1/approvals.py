@@ -9,8 +9,16 @@ from fastapi import APIRouter, Depends
 from app.api.deps import get_container, get_principal, page_params, require_user
 from app.container import Container
 from app.core.errors import denied
-from app.core.identity import APPROVERS, Principal
-from app.models.approval import ApproveRequest, CancelRequest, RejectRequest, approval_to_api
+from app.core.identity import Principal
+from app.core.ids import utcnow
+from app.models.approval import (
+    ApproveRequest,
+    CancelRequest,
+    DelegationCreate,
+    RejectRequest,
+    approval_to_api,
+    delegation_to_api,
+)
 
 router = APIRouter(prefix="/approvals", tags=["approvals"])
 
@@ -29,6 +37,33 @@ async def list_approvals(status: str | None = None, risk: str | None = None, req
     return {**res, "items": [approval_to_api(d) for d in res["items"]], "counts": await c.approvals.counts(p.tenant_id)}
 
 
+# Delegations are declared before /{approval_id} so that "delegations" is not read as an approval id.
+@router.get("/delegations")
+async def list_delegations(scope: str = "mine", include_past: bool = False, p: Principal = Depends(require_user()),
+                           c: Container = Depends(get_container)) -> dict[str, Any]:
+    docs = await c.approvals.list_delegations(p, everyone=scope == "all", include_past=include_past)
+    now = utcnow()
+    return {"items": [delegation_to_api(d, now) for d in docs]}
+
+
+@router.get("/delegations/candidates")
+async def delegate_candidates(p: Principal = Depends(require_user()),
+                              c: Container = Depends(get_container)) -> dict[str, Any]:
+    return {"items": await c.approvals.delegate_candidates(p)}
+
+
+@router.post("/delegations", status_code=201)
+async def create_delegation(body: DelegationCreate, p: Principal = Depends(require_user()),
+                            c: Container = Depends(get_container)) -> dict[str, Any]:
+    return delegation_to_api(await c.approvals.create_delegation(p, body), utcnow())
+
+
+@router.delete("/delegations/{delegation_id}")
+async def revoke_delegation(delegation_id: str, p: Principal = Depends(require_user()),
+                            c: Container = Depends(get_container)) -> dict[str, Any]:
+    return delegation_to_api(await c.approvals.revoke_delegation(p, delegation_id), utcnow())
+
+
 @router.get("/{approval_id}")
 async def get_approval(approval_id: str, p: Principal = Depends(get_principal),
                        c: Container = Depends(get_container)) -> dict[str, Any]:
@@ -43,6 +78,7 @@ async def get_approval(approval_id: str, p: Principal = Depends(get_principal),
             "related_invocations": [{**{k: v for k, v in i.items() if k != "_id"}, "id": i["_id"]}
                                     for i in d["related_invocations"]],
             "separation_of_duties_warning": d["separation_of_duties_warning"], "can_decide": d["can_decide"],
+            "cannot_decide_reason": d["cannot_decide_reason"], "decide_as": d["decide_as"],
             "agent_owner_user_id": d["agent_owner_user_id"]}
 
 
@@ -62,13 +98,13 @@ async def approval_status(approval_id: str, p: Principal = Depends(get_principal
 
 
 @router.post("/{approval_id}/approve")
-async def approve(approval_id: str, body: ApproveRequest, p: Principal = Depends(require_user(*APPROVERS)),
+async def approve(approval_id: str, body: ApproveRequest, p: Principal = Depends(require_user()),
                   c: Container = Depends(get_container)) -> dict[str, Any]:
     return approval_to_api(await c.approvals.approve(p, approval_id, body.comment, body.confirm_critical))
 
 
 @router.post("/{approval_id}/reject")
-async def reject(approval_id: str, body: RejectRequest, p: Principal = Depends(require_user(*APPROVERS)),
+async def reject(approval_id: str, body: RejectRequest, p: Principal = Depends(require_user()),
                  c: Container = Depends(get_container)) -> dict[str, Any]:
     return approval_to_api(await c.approvals.reject(p, approval_id, body.comment))
 

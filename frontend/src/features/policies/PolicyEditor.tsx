@@ -17,7 +17,11 @@ interface Draft {
 const EMPTY_CONSTRAINTS: PolicyConstraints = {
   environments: [], max_calls_per_minute: null, max_calls_per_hour: null, max_calls_per_day: null, require_approval: false,
   required_approvals: null, approver_roles: null, approval_policy_id: null, time_windows: [], source_cidrs: [],
+  approver_groups: null, escalate_after_minutes: null, escalation_roles: null, remind_before_expiry_minutes: null,
 }
+
+const ESCALATION_ROLES = ['security_admin', 'tenant_admin', 'approver', 'platform_admin']
+const minutes = (v: string): number | null => (v.trim() === '' ? null : Math.max(1, Math.min(10080, Math.round(Number(v)))) || null)
 
 function toDraft(p?: Policy): Draft {
   return {
@@ -177,9 +181,21 @@ export function PolicyEditor({ policy, onClose }: { policy?: Policy; onClose: ()
         </div>)}
         {d.effect === 'allow' && <>
           <div className="toggle-row"><span>Require human approval for matching calls</span><Switch on={d.constraints.require_approval} onChange={v => setC('require_approval', v)} label="Require approval" /></div>
-          {d.constraints.require_approval && <div className="field-row">
-            <Field label="Approvers required"><select value={d.constraints.required_approvals ?? 1} onChange={e => setC('required_approvals', Number(e.target.value) as 1 | 2)}><option value={1}>1</option><option value={2}>2 distinct</option></select></Field>
-          </div>}
+          {d.constraints.require_approval && <>
+            <div className="field-row">
+              <Field label="Approvers required"><select value={d.constraints.required_approvals ?? 1} onChange={e => setC('required_approvals', Number(e.target.value) as 1 | 2)}><option value={1}>1</option><option value={2}>2 distinct</option></select></Field>
+              <Field label="Remind before expiry (minutes)" hint="Raises an approval.expiring event, forwarded to your SIEM."><input type="number" min={1} max={10080} placeholder="off" value={d.constraints.remind_before_expiry_minutes ?? ''} onChange={e => setC('remind_before_expiry_minutes', minutes(e.target.value))} /></Field>
+            </div>
+            <Field label="Approver SSO groups (optional)" hint="Only approvers in one of these identity-provider groups, as of their last SSO login, may decide.">
+              <ListInput value={d.constraints.approver_groups || []} onChange={v => setC('approver_groups', v.length ? v : null)} placeholder="e.g. hr-approvers" />
+            </Field>
+            <div className="field-row">
+              <Field label="Escalate after (minutes)" hint="If still pending, also open the request to the roles below."><input type="number" min={1} max={10080} placeholder="off" value={d.constraints.escalate_after_minutes ?? ''} onChange={e => setC('escalate_after_minutes', minutes(e.target.value))} /></Field>
+              <Field label="Escalate to">
+                <div className="chips">{ESCALATION_ROLES.map(r => <label className="check" key={r} style={{ marginRight: 8 }}><input type="checkbox" disabled={!d.constraints.escalate_after_minutes} checked={(d.constraints.escalation_roles || []).includes(r)} onChange={e => { const n = toggleIn(d.constraints.escalation_roles || [], r, e.target.checked); setC('escalation_roles', n.length ? n : null) }} />{ROLE_LABELS[r] || r}</label>)}</div>
+              </Field>
+            </div>
+          </>}
         </>}
         <div className="toggle-row"><span>Enabled</span><Switch on={d.enabled} onChange={v => set('enabled', v)} label="Enabled" /></div>
       </>}

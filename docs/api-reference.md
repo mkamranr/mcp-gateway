@@ -99,11 +99,18 @@ Policy document (a policy read also returns `managed_by: {kind: "bundle", bundle
 | Method | Path | Who | Notes |
 |---|---|---|---|
 | GET | `/approvals?status=pending\|approved\|rejected\|expired\|cancelled&risk&tool&requester` | users; agents (own) | includes `counts` |
-| GET | `/approvals/{id}` | users; agents (own) | users get masked `arguments`, `integrity`, `changes_since_request`, `separation_of_duties_warning`, `can_decide` |
+| GET | `/approvals/{id}` | users; agents (own) | users get masked `arguments`, `integrity`, `changes_since_request`, `separation_of_duties_warning`, `can_decide`, `cannot_decide_reason`, `decide_as` (set when deciding under a delegation) |
 | GET | `/approvals/{id}/status` | users; agents (own) | agent polling. Includes `result` once COMPLETED (24 h). |
-| POST | `/approvals/{id}/approve` | P T S A | `{comment, confirm_critical}` |
-| POST | `/approvals/{id}/reject` | P T S A | `{comment}` (required by default) |
+| POST | `/approvals/{id}/approve` | any user with authority (own or delegated) | `{comment, confirm_critical}` |
+| POST | `/approvals/{id}/reject` | any user with authority (own or delegated) | `{comment}` (required by default) |
 | POST | `/approvals/{id}/cancel` | requester or admin | `{reason}` |
+| GET | `/approvals/delegations?scope=mine\|all&include_past` | users (`all`: P T S) | delegations given or received |
+| GET | `/approvals/delegations/candidates` | users | active tenant members for the delegate picker |
+| POST | `/approvals/delegations` | approvers; P T S for someone else | `{delegate_user_id, delegator_user_id?, starts_at?, ends_at, reason}` (max 90 days) |
+| DELETE | `/approvals/delegations/{id}` | delegator, delegate, creator, P T S | revoke |
+
+Approval constraints on policies (and on a tool's approval configuration): `approver_groups`,
+`escalate_after_minutes`, `escalation_roles`, `remind_before_expiry_minutes`. See [approvals](approvals.md).
 
 ### Observability & settings
 | Method | Path | Who |

@@ -94,8 +94,12 @@ class Worker:
         await self.c.redis.zremrangebyscore(HEARTBEAT_KEY, "-inf", time.time() - 24 * 3600)  # long-gone hosts
         expired = await self.c.approvals.expire_due()
         requeued = await self.c.approvals.requeue_stuck()
-        if expired or requeued:
-            log.info("worker.maintenance", expired=expired, requeued=requeued)
+        # Each request is claimed with a compare-and-set, so several workers can sweep at once safely.
+        escalated = await self.c.approvals.escalate_due()
+        reminded = await self.c.approvals.remind_due()
+        if expired or requeued or escalated or reminded:
+            log.info("worker.maintenance", expired=expired, requeued=requeued, escalated=escalated,
+                     reminded=reminded)
 
     async def retention_due(self) -> bool:
         """At most one retention run per RETENTION_INTERVAL_SECONDS across all workers (the gate is not released,

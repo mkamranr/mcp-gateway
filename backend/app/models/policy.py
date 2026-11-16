@@ -51,6 +51,9 @@ class Resources(Strict):
     _t = field_validator("tools")(_patterns)
 
 
+ApproverRole = Literal["approver", "security_admin", "tenant_admin", "platform_admin"]
+
+
 class Constraints(Strict):
     environments: list[Literal["development", "test", "production"]] = Field(default_factory=list)
     max_calls_per_minute: int | None = Field(default=None, ge=1)
@@ -59,6 +62,13 @@ class Constraints(Strict):
     require_approval: bool = False
     required_approvals: Literal[1, 2] | None = None
     approver_roles: list[str] | None = None
+    # Only users in one of these SSO groups (as of their last SSO login) may approve. Narrows approver_roles.
+    approver_groups: list[str] | None = Field(default=None, max_length=50)
+    # A request still pending after this long is opened to escalation_roles too (and an audit event is raised).
+    escalate_after_minutes: int | None = Field(default=None, ge=1, le=10080)
+    escalation_roles: list[ApproverRole] | None = Field(default=None, max_length=4)
+    # Raise an approval.expiring audit event (forwarded to the SIEM) this long before the request expires.
+    remind_before_expiry_minutes: int | None = Field(default=None, ge=1, le=10080)
     approval_policy_id: str | None = Field(default=None, max_length=100)
     time_windows: list[TimeWindow] = Field(default_factory=list, max_length=10)
     source_cidrs: list[str] = Field(default_factory=list, max_length=50)

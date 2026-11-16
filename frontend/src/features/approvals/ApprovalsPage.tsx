@@ -2,13 +2,13 @@ import { useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Bot, CheckCircle2, Clock, Loader2, Search, XCircle } from 'lucide-react'
-import { useAuth } from '../../app/auth'
 import { api, ApiError, errorMessage } from '../../services/api'
 import { dateTime, shortHash, timeAgo } from '../../services/format'
 import type { Approval, Page } from '../../services/types'
 import { Badge, Callout, DecisionBadge, Drawer, Field, JsonView, Modal, PageHeading, Pager, Panel, QueryState, RiskBadge, Status, Tabs, useToast } from '../../components/ui'
+import { Delegations } from './Delegations'
 
-type Tab = 'pending' | 'approved' | 'rejected' | 'expired' | 'cancelled'
+type Tab = 'pending' | 'approved' | 'rejected' | 'expired' | 'cancelled' | 'delegations'
 const PAGE = 25
 const STATUS_COLOR: Record<string, 'green' | 'red' | 'orange' | 'purple' | 'blue'> = {
   PENDING: 'orange', APPROVED: 'blue', REVALIDATING: 'blue', EXECUTING: 'blue', COMPLETED: 'green',
@@ -27,7 +27,7 @@ export function ApprovalsPage() {
   const reset = () => { setPage(0); setCursors([null]) }
   const q = useQuery({
     queryKey: ['approvals', tab, risk, tool, requester, cursors[page]],
-    queryFn: () => api.get<Page<Approval> & { counts: { pending: number; oldest_pending_age_seconds: number } }>('/approvals', { status: tab, risk, tool, requester, limit: PAGE, cursor: cursors[page] }),
+    queryFn: () => api.get<Page<Approval> & { counts: { pending: number; oldest_pending_age_seconds: number } }>('/approvals', { status: tab === 'delegations' ? 'pending' : tab, risk, tool, requester, limit: PAGE, cursor: cursors[page] }),
     refetchInterval: tab === 'pending' ? 15_000 : false,
   })
   const pendingCount = q.data?.counts?.pending
@@ -38,8 +38,9 @@ export function ApprovalsPage() {
       <Tabs large value={tab} onChange={v => { setTab(v); reset() }} options={[
         { value: 'pending', label: `Pending${pendingCount ? ` (${pendingCount})` : ''}` }, { value: 'approved', label: 'Approved' },
         { value: 'rejected', label: 'Rejected' }, { value: 'expired', label: 'Expired' }, { value: 'cancelled', label: 'Cancelled' },
+        { value: 'delegations', label: 'Delegations' },
       ]} />
-      <Panel>
+      {tab === 'delegations' ? <Delegations /> : <Panel>
         <div className="filters">
           <div className="search"><Search size={14} /><input placeholder="Tool name" value={tool} onChange={e => { setTool(e.target.value); reset() }} /></div>
           <input placeholder="Requester" title="Agent id or name" value={requester} onChange={e => { setRequester(e.target.value); reset() }} />
@@ -52,7 +53,8 @@ export function ApprovalsPage() {
                 <div className="approval-icon"><Bot size={17} /></div>
                 <div className="approval-main">
                   <div className="approval-title"><b className="mono">{a.gateway_name}</b><RiskBadge risk={a.risk_level} /><Badge color={STATUS_COLOR[a.status]}>{a.status.replace(/_/g, ' ')}</Badge>
-                    {a.required_approvals > 1 && <Badge color="purple">{a.approvals.length}/{a.required_approvals} approvals</Badge>}</div>
+                    {a.required_approvals > 1 && <Badge color="purple">{a.approvals.length}/{a.required_approvals} approvals</Badge>}
+                    {a.status === 'PENDING' && a.escalated_at && <Badge color="red">escalated</Badge>}</div>
                   <p>{a.purpose || <span className="muted">No purpose given</span>}</p>
                   <small>Requested by <b>{a.requester?.name || a.requester?.id}</b> · {timeAgo(a.created_at)}{a.status === 'PENDING' && <> · expires {timeAgo(a.expires_at)}</>}</small>
                 </div>
@@ -65,7 +67,7 @@ export function ApprovalsPage() {
             }} />
           </>}
         </QueryState>
-      </Panel>
+      </Panel>}
       {id && <ApprovalDetail id={id} onClose={() => nav('/approvals')} />}
     </>
   )
@@ -73,7 +75,6 @@ export function ApprovalsPage() {
 
 function ApprovalDetail({ id, onClose }: { id: string; onClose: () => void }) {
   const q = useQuery({ queryKey: ['approval', id], queryFn: () => api.get<Approval>(`/approvals/${id}`) })
-  const { can } = useAuth()
   const qc = useQueryClient()
   const toast = useToast()
   const [decision, setDecision] = useState<'approve' | 'reject' | null>(null)
@@ -92,7 +93,9 @@ function ApprovalDetail({ id, onClose }: { id: string; onClose: () => void }) {
     onError: e => { if (e instanceof ApiError) setErr(e); else toast.error(e) },
   })
 
-  const canAct = !!a && a.status === 'PENDING' && can('platform_admin', 'tenant_admin', 'security_admin', 'approver')
+  // Anyone may hold authority over a request through a delegation, so the server's can_decide decides.
+  const canAct = !!a && a.status === 'PENDING' && (a.can_decide || !!a.cannot_decide_reason)
+  const onBehalf = a?.decide_as?.on_behalf_of_name
   const policyCfg = a?.approval_policy || {}
   const commentRequired = decision === 'reject' ? policyCfg.require_comment_on_reject !== false : !!policyCfg.require_comment_on_approve
   const criticalOk = a?.risk_level !== 'critical' || decision !== 'approve' || typed === a.tool_name
@@ -105,7 +108,9 @@ function ApprovalDetail({ id, onClose }: { id: string; onClose: () => void }) {
       <QueryState q={q}>{a => <>
         <div className="approval-title" style={{ marginBottom: 10 }}><b className="mono" style={{ fontSize: 13 }}>{a.gateway_name}</b><RiskBadge risk={a.risk_level} /><Badge color={STATUS_COLOR[a.status]}>{a.status.replace(/_/g, ' ')}</Badge></div>
         {a.status === 'PENDING' && a.separation_of_duties_warning && <Callout kind="danger">You requested this call, or own the requesting agent. Separation of duties means someone else has to approve it.</Callout>}
-        {a.status === 'PENDING' && !a.can_decide && !a.separation_of_duties_warning && <Callout kind="warn">You can't decide this request: you lack an approver role for it, or you already approved it.</Callout>}
+        {a.status === 'PENDING' && !a.can_decide && !a.separation_of_duties_warning && <Callout kind="warn">You can't decide this request. {a.cannot_decide_reason || 'You lack an approver role for it, or you already approved it.'}</Callout>}
+        {a.status === 'PENDING' && a.can_decide && a.decide_as && <Callout kind="info">You are covering for <b>{a.decide_as.on_behalf_of_name}</b>. Your decision is recorded as made by you on their behalf.</Callout>}
+        {a.status === 'PENDING' && a.escalated_at && <Callout kind="warn">Escalated {timeAgo(a.escalated_at)} because nobody decided in time. It is now open to: {(policyCfg.escalation_roles || []).join(', ') || 'no additional roles'}.</Callout>}
         {a.changes_since_request && a.changes_since_request.length > 0 && <Callout kind="warn">Changed since the request: {a.changes_since_request.map(c => c.replace(/_/g, ' ')).join(', ')}. The call is revalidated against current state before it runs.</Callout>}
         {a.integrity && a.integrity !== 'verified' && <Callout kind="danger">Argument integrity check failed ({a.integrity}). Don't approve. Execution would be aborted.</Callout>}
         {a.risk_level === 'critical' && a.status === 'PENDING' && <Callout kind="danger">Critical action. It may be destructive or irreversible.</Callout>}
@@ -117,6 +122,8 @@ function ApprovalDetail({ id, onClose }: { id: string; onClose: () => void }) {
           <dt>Requested</dt><dd>{dateTime(a.created_at)}</dd>
           <dt>Expires</dt><dd>{dateTime(a.expires_at)} {a.status === 'PENDING' && <span className="muted">({timeAgo(a.expires_at)})</span>}</dd>
           <dt>Approvals</dt><dd>{a.approvals.length} of {a.required_approvals} required</dd>
+          {(policyCfg.approver_groups?.length ?? 0) > 0 && <><dt>Approver groups</dt><dd>{policyCfg.approver_groups!.join(', ')}</dd></>}
+          {a.status === 'PENDING' && a.escalate_at && !a.escalated_at && <><dt>Escalates</dt><dd>{dateTime(a.escalate_at)} <span className="muted">to {(policyCfg.escalation_roles || []).join(', ') || 'audit only'}</span></dd></>}
           <dt>Argument hash</dt><dd className="mono">{shortHash(a.arguments_hash)} {a.integrity === 'verified' && <Badge color="green">verified</Badge>}</dd>
           {(policyCfg.reasons?.length ?? 0) > 0 && <><dt>Why approval</dt><dd>{policyCfg.reasons!.join(', ')}</dd></>}
         </dl>
@@ -129,8 +136,8 @@ function ApprovalDetail({ id, onClose }: { id: string; onClose: () => void }) {
           <div className="section-title">Decision trail</div>
           <div className="timeline">
             <div><b>Requested</b><small>{dateTime(a.created_at)} · {a.requester?.name}</small></div>
-            {a.approvals.map(x => <div key={x.approver_id + x.at}><b>Approved by {x.approver_name}</b><small>{dateTime(x.at)}{x.comment ? ` · “${x.comment}”` : ''}</small></div>)}
-            {a.rejection && <div><b>Rejected by {a.rejection.by_name}</b><small>{dateTime(a.rejection.at)} · “{a.rejection.comment}”</small></div>}
+            {a.approvals.map(x => <div key={x.approver_id + x.at}><b>Approved by {x.approver_name}{x.on_behalf_of_name ? ` on behalf of ${x.on_behalf_of_name}` : ''}</b><small>{dateTime(x.at)}{x.comment ? ` · “${x.comment}”` : ''}</small></div>)}
+            {a.rejection && <div><b>Rejected by {a.rejection.by_name}{a.rejection.on_behalf_of_name ? ` on behalf of ${a.rejection.on_behalf_of_name}` : ''}</b><small>{dateTime(a.rejection.at)} · “{a.rejection.comment}”</small></div>}
             {a.cancellation && <div><b>Cancelled</b><small>{dateTime(a.cancellation.at)} · {a.cancellation.reason}</small></div>}
             {a.executed_at && <div><b>Executed</b><small>{dateTime(a.executed_at)}</small></div>}
             {a.execution && <div><b>Execution {a.execution.status || ''}</b><small>{a.execution.error_code ? `${a.execution.error_code}: ${a.execution.message || ''}` : 'completed'}</small></div>}
@@ -151,8 +158,8 @@ function ApprovalDetail({ id, onClose }: { id: string; onClose: () => void }) {
         </>}>
           {err && <Callout kind="danger">{errorMessage(err)}</Callout>}
           <p style={{ fontSize: 11 }}>{decision === 'approve'
-            ? <>Approve <b className="mono">{a.gateway_name}</b> for <b>{a.requester?.name}</b>{a.required_approvals > 1 && a.approvals.length + 1 < a.required_approvals ? '. Another approver is still needed.' : '. The worker revalidates it and runs it once.'}</>
-            : <>The request is closed and never runs.</>}</p>
+            ? <>{onBehalf && <>On behalf of <b>{onBehalf}</b>: </>}Approve <b className="mono">{a.gateway_name}</b> for <b>{a.requester?.name}</b>{a.required_approvals > 1 && a.approvals.length + 1 < a.required_approvals ? '. Another approver is still needed.' : '. The worker revalidates it and runs it once.'}</>
+            : <>{onBehalf && <>On behalf of <b>{onBehalf}</b>: </>}The request is closed and never runs.</>}</p>
           <Field label={`Comment${commentRequired ? ' (required)' : ''}`}><textarea value={comment} onChange={e => setComment(e.target.value)} autoFocus /></Field>
           {decision === 'approve' && a.risk_level === 'critical' && <Field label={`Type the tool name "${a.tool_name}" to confirm this critical action`}><input value={typed} onChange={e => setTyped(e.target.value)} /></Field>}
           <p className="muted" style={{ fontSize: 9 }}><Clock size={10} /> Your decision is recorded in the audit log.</p>

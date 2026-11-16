@@ -169,9 +169,24 @@ def _evaluate(policies: list[dict[str, Any]], ctx: RequestContext) -> PolicyDeci
         for a in requiring:
             if a["constraints"].get("approver_roles"):
                 roles = [r for r in roles if r in a["constraints"]["approver_roles"]] or a["constraints"]["approver_roles"]
+        # Approver groups narrow like roles. Escalation takes the earliest deadline and every escalation role;
+        # reminders take the earliest point (the largest lead time).
+        groups = list(base.get("approver_groups") or [])
+        for a in requiring:
+            if a["constraints"].get("approver_groups"):
+                g = a["constraints"]["approver_groups"]
+                groups = [x for x in groups if x in g] or list(g)
+        sources = [base] + [a["constraints"] for a in requiring]
+        escalate = [int(x["escalate_after_minutes"]) for x in sources if x.get("escalate_after_minutes")]
+        esc_roles = sorted({r for x in sources for r in (x.get("escalation_roles") or [])})
+        remind = [int(x["remind_before_expiry_minutes"]) for x in sources if x.get("remind_before_expiry_minutes")]
         obligations["approval"] = {
             "required_approvals": required,
             "approver_roles": roles,
+            "approver_groups": groups,
+            "escalate_after_minutes": min(escalate) if escalate else None,
+            "escalation_roles": esc_roles,
+            "remind_before_expiry_minutes": max(remind) if remind else None,
             "allow_self_approval": bool(base.get("allow_self_approval", False)) and not requiring,
             "ttl_minutes": int(base.get("ttl_minutes", 60)),
             "require_comment_on_reject": bool(base.get("require_comment_on_reject", True)),
