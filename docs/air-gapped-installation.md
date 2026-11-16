@@ -60,6 +60,9 @@ Volumes and secrets are kept. Read the release notes for migration steps (indexe
 
 ## What was verified
 
-The bundle scripts are POSIX shell and use only `docker`, `gzip`, `tar` and `sha256sum`. They were written
-for this release, but there was no Docker host in the development environment, so they have not yet been run
-end to end. Do a dry run in a staging enclave first.
+The bundle scripts are POSIX shell and use only `docker`, `gzip`, `tar` and `sha256sum`. The manual
+`release-bundle.yml` workflow runs the whole procedure end to end: it builds the bundle, deletes every
+image, copies only the `.tar.gz` and `.sha256`, verifies the checksum and image IDs, then starts the
+stack with `--pull never` and container egress to public addresses blocked, and runs the smoke test.
+The bundle is uploaded as a workflow artifact (kept 14 days). Still do a dry run in your own staging
+enclave, because your Docker version, registry and transfer process differ from CI.

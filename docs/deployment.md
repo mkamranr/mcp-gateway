@@ -3,9 +3,10 @@
 Single-host deployment of five containers: `web-ui` (nginx), `gateway-api`, `worker`, `mongodb` and `redis`.
 For an air-gapped site, build the bundle on a connected host first ([air-gapped-installation.md](air-gapped-installation.md)).
 
-> Status: the Compose file, Dockerfiles and scripts are part of this repository but were not executed in
-> the development environment that produced them (no Docker available there). Run the verification
-> checklist below on your first install.
+> Status: CI (`compose-smoke` job) builds the images and starts this Compose stack on every push with all
+> container egress to public addresses blocked, then checks health, published ports, MongoDB
+> authentication, sign-in, CSRF and security headers. Still run the verification checklist below on your
+> first install: CI does not cover your TLS setup, firewall or upstream servers.
 
 ## Requirements
 
