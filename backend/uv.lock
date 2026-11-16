@@ -539,12 +539,12 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "redis", specifier = ">=5.2" },
     { name = "structlog", specifier = ">=24.4" },
-    { name = "uvicorn", extras = ["standard"], specifier = ">=0.32" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.54.0" },
 ]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "fakeredis", extras = ["lua"], specifier = ">=2.26" },
+    { name = "fakeredis", extras = ["lua"], specifier = ">=2.40.0" },
     { name = "mypy", specifier = ">=1.13" },
     { name = "pymongo-inmemory", specifier = ">=0.5" },
     { name = "pytest", specifier = ">=8.3" },
