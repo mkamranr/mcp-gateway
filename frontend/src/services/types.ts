@@ -159,7 +159,7 @@ export interface TenantUser {
 
 export interface Tenant { id: string; name: string; slug: string; status: string; settings: Record<string, any>; created_at: string }
 
-export interface HealthComponent { name: string; status: string; last_heartbeat?: string | null; queue_depth?: number | null }
+export interface HealthComponent { name: string; status: string; last_heartbeat?: string | null; queue_depth?: number | null; workers_alive?: number }
 
 export interface Overview {
   cards: { servers: number; servers_healthy: number; enabled_tools: number; total_tools: number; active_agents: number; calls_today: number; denied_today: number; pending_approvals: number }

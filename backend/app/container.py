@@ -32,7 +32,7 @@ class Container:
         self.repos = Repos(self.db)
         self.encryptor = Encryptor(settings.encryption_key_bytes())
         self.audit = AuditService(self.repos)
-        self.clients = ClientManager(settings, self.repos, self.encryptor)
+        self.clients = ClientManager(settings, self.repos, self.encryptor, self.redis)
         self.auth = AuthService(settings, self.repos, self.redis, self.audit)
         self.identity = IdentityService(settings, self.repos, self.audit, self.auth)
         self.sso = SsoService(settings, self.repos, self.redis, self.encryptor, self.audit, self.auth)

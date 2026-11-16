@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import os
+import socket
 from typing import Any
 
 from app.config import Settings
@@ -9,6 +12,7 @@ from app.core.crypto import generate_api_key, hash_password, random_token
 from app.core.errors import ErrorCode, GatewayError, denied, not_found
 from app.core.identity import Principal, Role
 from app.core.ids import ensure_aware, utcnow
+from app.core.lease import Lease
 from app.models.identity import (
     AgentCreate,
     AgentKeyCreate,
@@ -291,11 +295,31 @@ class IdentityService:
         return int(res.modified_count)
 
     # ------------------------------------------------------------------ bootstrap
-    async def bootstrap(self) -> None:
-        """Create the bootstrap platform administrator and default tenant if none exist."""
+    async def bootstrap(self, wait_seconds: float = 60) -> None:
+        """Create the bootstrap platform administrator and default tenant if none exist.
+
+        Several API replicas start at once: a Redis lease lets one of them bootstrap while the others wait, then
+        find the administrator already there (instead of failing on a duplicate key and restarting)."""
         s = self.settings
         if not s.bootstrap_admin_username or not s.bootstrap_admin_password:
             return
+        if await self.repos.users.find_one({"is_platform_admin": True}):
+            return
+        owner = f"{socket.gethostname()}-{os.getpid()}-{random_token(6)}"  # unique per attempt, not per process
+        lease = Lease(self.auth.redis, "lease:bootstrap", owner, 60)
+        for _ in range(int(wait_seconds / 0.25)):
+            if await lease.acquire():
+                break
+            await asyncio.sleep(0.25)
+        else:
+            raise GatewayError(ErrorCode.DEPENDENCY_UNAVAILABLE, "Another replica is still bootstrapping.")
+        try:
+            await self._bootstrap()
+        finally:
+            await lease.release()
+
+    async def _bootstrap(self) -> None:
+        s = self.settings
         if await self.repos.users.find_one({"is_platform_admin": True}):
             return
         tenant = await self.repos.tenants.find_one({"slug": s.bootstrap_tenant_slug})

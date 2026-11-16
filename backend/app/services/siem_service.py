@@ -30,6 +30,7 @@ from app.core.crypto import Encryptor
 from app.core.errors import ErrorCode, GatewayError
 from app.core.identity import Principal
 from app.core.ids import new_id, utcnow
+from app.core.lease import Lease
 from app.core.logging import get_logger
 from app.mcp.net_guard import METADATA_HOSTS
 from app.models.siem import SiemConfigUpdate
@@ -44,6 +45,7 @@ STATE_KEY = "siem_state"
 SECRET_AAD = "system:siem:http_auth_value"  # noqa: S105 (associated-data label, not a secret)
 SENT_KEY = "siem:sent"
 LEASE_KEY = "siem:lease"
+LEASE_SECONDS = 60  # longer than one batch (send timeout 15 s); renewed before each batch
 STATUS_KEY = "siem:status"
 LAG_SECONDS = 5
 OVERLAP_SECONDS = 120
@@ -239,16 +241,19 @@ class SiemService:
         et = str(e.get("event_type") or "")
         return not prefixes or any(et.startswith(x.rstrip("*")) for x in prefixes)
 
+    async def release_lease(self, owner: str) -> None:
+        """On worker shutdown: hand forwarding to another worker now instead of after the lease expires."""
+        await Lease(self.redis, LEASE_KEY, owner, LEASE_SECONDS).release()
+
     async def forward_once(self, owner: str) -> int:
         """One pass. Returns the number of events sent. Safe to call often; does nothing when disabled,
         when another worker holds the lease, or while backing off after a failure."""
         cfg = await self._stored()
         if not cfg.get("enabled"):
             return 0
-        if not await self.redis.set(LEASE_KEY, owner, nx=True, ex=60):
-            if await self.redis.get(LEASE_KEY) != owner:
-                return 0
-            await self.redis.expire(LEASE_KEY, 60)
+        lease = Lease(self.redis, LEASE_KEY, owner, LEASE_SECONDS)
+        if not await lease.acquire():
+            return 0
         if await self.redis.exists(STATUS_KEY + ":backoff"):
             return 0
         state = await self.repos.settings.get_value(STATE_KEY) or {}
@@ -257,6 +262,11 @@ class SiemService:
         horizon = utcnow() - timedelta(seconds=LAG_SECONDS)
         sent_total = 0
         for _ in range(MAX_BATCHES_PER_PASS):
+            # Renewed before every batch: a pass can outlast one lease period, and if the lease was lost
+            # (this worker stalled), another worker owns the cursor now and this one must stop.
+            if not await lease.renew():
+                log.warning("siem.lease_lost", owner=owner)
+                break
             batch, processed, newest = await self._collect(cfg, cursor, horizon, floor)
             if not processed:
                 break
@@ -267,6 +277,9 @@ class SiemService:
                 break
             await self.redis.zadd(SENT_KEY, {eid: ts.timestamp() for eid, ts in processed})
             cursor = max(cursor, newest)
+            if not await lease.renew():  # never move a cursor another worker now owns
+                log.warning("siem.lease_lost", owner=owner)
+                break
             await self.repos.settings.set_value(
                 STATE_KEY, {"cursor": cursor.isoformat(), "floor": floor.isoformat() if floor else None}, owner)
             await self.redis.zremrangebyscore(SENT_KEY, "-inf", (cursor - timedelta(seconds=OVERLAP_SECONDS * 2)).timestamp())

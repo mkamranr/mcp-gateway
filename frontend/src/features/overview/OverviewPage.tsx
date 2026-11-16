@@ -114,7 +114,7 @@ function OverviewBody({ d }: { d: Overview }) {
             {d.health.map(h => (
               <div key={h.name}>
                 <span>{h.name}</span>
-                <span className="muted">{h.queue_depth != null ? `queue ${h.queue_depth}` : h.last_heartbeat ? timeAgo(h.last_heartbeat) : ''}</span>
+                <span className="muted">{[h.workers_alive != null && h.workers_alive > 1 ? `${h.workers_alive} workers` : '', h.queue_depth != null ? `queue ${h.queue_depth}` : h.last_heartbeat ? timeAgo(h.last_heartbeat) : ''].filter(Boolean).join(' · ')}</span>
                 <Status value={h.status} />
               </div>
             ))}

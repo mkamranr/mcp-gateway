@@ -6,7 +6,8 @@ import csv
 import io
 import json
 import re
-from datetime import datetime
+import time
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request
@@ -21,6 +22,7 @@ from app.core.ids import utcnow
 from app.db import redis_ping
 from app.models.registry import Strict
 from app.services.invocation_service import InvocationContext
+from app.workers.heartbeat import HEARTBEAT_FRESH_SECONDS, HEARTBEAT_KEY
 
 router = APIRouter(tags=["audit & usage"])
 
@@ -211,14 +213,17 @@ async def overview(p: Principal = Depends(require_user()), c: Container = Depend
 async def _health_components(c: Container) -> list[dict[str, Any]]:
     mongo = await c.db.ping()
     redis = await redis_ping(c.redis)
-    worker_beat = None
+    worker_beat: str | None = None
+    workers_alive = 0
     try:
-        worker_beat = await c.redis.get("worker:heartbeat")
+        beats = await c.redis.zrangebyscore(HEARTBEAT_KEY, time.time() - HEARTBEAT_FRESH_SECONDS, "+inf",
+                                            withscores=True)
+        workers_alive = len(beats)
+        if beats:
+            worker_beat = datetime.fromtimestamp(max(float(b[1]) for b in beats), tz=UTC).isoformat()
     except Exception:  # noqa: BLE001
         worker_beat = None
-    worker_ok = False
-    if worker_beat:
-        worker_ok = (utcnow() - datetime.fromisoformat(str(worker_beat))).total_seconds() < 60
+    worker_ok = workers_alive > 0
     queue_depth = None
     try:
         queue_depth = await c.redis.xlen("jobs:approved")
@@ -227,6 +232,7 @@ async def _health_components(c: Container) -> list[dict[str, Any]]:
     return [
         {"name": "Gateway API", "status": "healthy"},
         {"name": "Worker", "status": "healthy" if worker_ok else "unhealthy", "last_heartbeat": worker_beat,
+         "workers_alive": workers_alive,
          "queue_depth": queue_depth},
         {"name": "MongoDB", "status": "healthy" if mongo else "unhealthy"},
         {"name": "Redis", "status": "healthy" if redis else "unhealthy"},
@@ -257,6 +263,8 @@ async def metrics(p: Principal = Depends(require_user("platform_admin", "securit
     for comp in await _health_components(c):
         name = comp["name"].lower().replace(" ", "_")
         lines.append(f'mgw_component_up{{component="{name}"}} {1 if comp["status"] == "healthy" else 0}')
+        if "workers_alive" in comp:
+            lines += ["# TYPE mgw_workers_alive gauge", f"mgw_workers_alive {comp['workers_alive']}"]
     lines.append(f"mgw_in_flight_calls {await c.quotas.in_flight(t)}")
     servers = await c.repos.servers.find_all(t, {"archived": {"$ne": True}})
     for s in servers:

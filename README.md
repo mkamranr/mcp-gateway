@@ -77,7 +77,9 @@ To try single sign-on, start the stack with the mock IdP instead:
 
 ## Production deployment
 
-Docker Compose, single host, air-gap ready. See [docs/deployment.md](docs/deployment.md) and
+Docker Compose, air-gap ready. Single host by default; several API replicas and workers with
+`docker-compose.ha.yml`, and multi-host with a MongoDB replica set and Redis Sentinel
+([docs/high-availability.md](docs/high-availability.md)). See [docs/deployment.md](docs/deployment.md) and
 [docs/air-gapped-installation.md](docs/air-gapped-installation.md).
 
 ```bash
@@ -119,5 +121,5 @@ weekly updates for uv, npm, Actions and base images.
 [Architecture](docs/architecture.md) · [Security model](docs/security-model.md) ·
 [Threat model](docs/threat-model.md) · [API reference](docs/api-reference.md) ·
 [MCP client configuration](docs/mcp-client-configuration.md) · [Deployment](docs/deployment.md) ·
-[Air-gapped installation](docs/air-gapped-installation.md) · [Single sign-on](docs/sso.md) · [SIEM forwarding](docs/siem.md) · [Policy as code](docs/policy-as-code.md) · [Operations & runbooks](docs/operations.md) ·
+[Air-gapped installation](docs/air-gapped-installation.md) · [Single sign-on](docs/sso.md) · [SIEM forwarding](docs/siem.md) · [Policy as code](docs/policy-as-code.md) · [High availability](docs/high-availability.md) · [Operations & runbooks](docs/operations.md) ·
 [Security policy](SECURITY.md) · [Contributing](CONTRIBUTING.md)

@@ -83,7 +83,7 @@ function SettingsSection({ section, d }: { section: Section; d: SettingsResp }) 
 
   return <Panel title="System health" subtitle="Live status of gateway dependencies">
     <div className="service-grid">{d.health.map(h => <div key={h.name}><span>{h.name}</span><span style={{ display: 'grid', justifyItems: 'end', gap: 3 }}><Status value={h.status} />
-      {h.last_heartbeat && <small className="muted" style={{ fontSize: 9 }}>beat {timeAgo(h.last_heartbeat)}</small>}{h.queue_depth != null && <small className="muted" style={{ fontSize: 9 }}>queue {h.queue_depth}</small>}</span></div>)}</div>
+      {h.last_heartbeat && <small className="muted" style={{ fontSize: 9 }}>beat {timeAgo(h.last_heartbeat)}</small>}{h.workers_alive != null && <small className="muted" style={{ fontSize: 9 }}>{h.workers_alive} alive</small>}{h.queue_depth != null && <small className="muted" style={{ fontSize: 9 }}>queue {h.queue_depth}</small>}</span></div>)}</div>
   </Panel>
 }
 

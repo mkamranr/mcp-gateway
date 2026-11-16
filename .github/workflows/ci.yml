@@ -219,3 +219,68 @@ jobs:
       - name: Tear down
         if: always()
         run: docker compose down -v
+
+  compose-ha:
+    name: Multi-replica Compose (2 API replicas, 2 workers)
+    needs: [backend, frontend]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      COMPOSE_FILE: docker-compose.yml:docker-compose.ha.yml
+      BASE: http://127.0.0.1:8088
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Secrets, configuration and images
+        run: |
+          sh deploy/scripts/generate-secrets.sh
+          cp .env.example .env
+          docker compose build
+          docker compose pull mongodb redis
+      - name: First boot with replicas starting together
+        run: |
+          docker compose up -d --no-build --pull never --wait --wait-timeout 300
+          docker compose ps
+          test "$(docker compose ps -q --status running gateway-api | wc -l)" = 2
+          test "$(docker compose ps -q --status running worker | wc -l)" = 2
+          # Both API replicas raced to bootstrap the first admin; neither may have crashed doing it.
+          for c in $(docker compose ps -q gateway-api); do
+            n="$(docker inspect -f '{{.RestartCount}}' "$c")"; echo "$c restarts=$n"
+            [ "$n" = 0 ] || { echo "::error::an API replica restarted during first boot"; exit 1; }
+          done
+      - name: One session works on every replica; both workers report in
+        run: |
+          python3 .github/scripts/ha_check.py login "$BASE" secrets/bootstrap_admin_password /tmp/session.json
+          python3 .github/scripts/ha_check.py hammer "$BASE" /tmp/session.json 40
+          python3 .github/scripts/ha_check.py workers "$BASE" /tmp/session.json 2
+      - name: Losing an API replica under load drops no request
+        run: |
+          docker compose ps -q gateway-api | sort > /tmp/original-api
+          python3 .github/scripts/ha_check.py hammer "$BASE" /tmp/session.json 200 &
+          load=$!
+          sleep 3
+          docker stop "$(head -1 /tmp/original-api)"
+          wait "$load"
+      - name: A newly added replica takes traffic without reloading web-ui
+        run: |
+          docker compose up -d --no-build --pull never --no-recreate --scale gateway-api=3 --wait --wait-timeout 180
+          docker compose ps -q gateway-api | sort > /tmp/now-api
+          new="$(comm -13 /tmp/original-api /tmp/now-api)"
+          test -n "$new" || { echo "::error::no new replica"; exit 1; }
+          # Stop both original replicas: only the new one is left, so nginx must have resolved it.
+          docker stop $(cat /tmp/original-api)
+          sleep 2
+          python3 .github/scripts/ha_check.py hammer "$BASE" /tmp/session.json 40
+      - name: Worker failover
+        run: |
+          w="$(docker compose ps -q worker | head -1)"
+          docker stop "$w"
+          python3 .github/scripts/ha_check.py workers "$BASE" /tmp/session.json 1
+          test "$(docker compose ps -q --status running worker | wc -l)" = 1
+          docker start "$w"
+          python3 .github/scripts/ha_check.py workers "$BASE" /tmp/session.json 2
+      - name: Logs
+        if: always()
+        run: docker compose logs --no-color --tail=200
+      - name: Tear down
+        if: always()
+        run: docker compose down -v

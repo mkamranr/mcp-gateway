@@ -1,6 +1,8 @@
 # Deployment (Docker Compose)
 
 Single-host deployment of five containers: `web-ui` (nginx), `gateway-api`, `worker`, `mongodb` and `redis`.
+To run several API replicas and workers, or to spread the gateway over several hosts with a MongoDB replica set
+and Redis Sentinel, see [high availability](high-availability.md).
 For an air-gapped site, build the bundle on a connected host first ([air-gapped-installation.md](air-gapped-installation.md)).
 
 > Status: CI (`compose-smoke` job) builds the images and starts this Compose stack on every push with all

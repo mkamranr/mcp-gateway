@@ -1,30 +1,53 @@
-"""Creates upstream adapter sessions from stored server documents and enforces per-server concurrency."""
+"""Creates upstream adapter sessions from stored server documents and enforces per-server concurrency.
+
+The per-server cap (``max_concurrent_calls``) is shared by every API replica and worker: it is a Redis lease
+semaphore (a sorted set of call tokens scored by their expiry, using Redis' clock). A replica that dies mid-call
+can't leak its slot for longer than the call could have lasted.
+"""
 
 from __future__ import annotations
 
 import json
+import secrets
+import time
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from typing import Any
 
 import anyio
+from redis.asyncio import Redis
 
 from app.config import Settings
 from app.core.crypto import Encryptor
+from app.core.errors import ErrorCode, GatewayError
+from app.core.logging import get_logger
 from app.mcp.adapters.base import MCPServerAdapter, ServerConfig, UpstreamError
 from app.mcp.adapters.sdk import SdkAdapter
 from app.mcp.net_guard import NetPolicy
 from app.repositories.collections import Repos
 
 AdapterFactory = Callable[[], MCPServerAdapter]
+log = get_logger(__name__)
+
+# KEYS[1]: semaphore zset. ARGV: limit, token, hold_ms. Returns 1 when a slot was taken.
+SEM_ACQUIRE = """
+local t = redis.call('TIME')
+local now = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
+redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', now)
+if redis.call('ZCARD', KEYS[1]) >= tonumber(ARGV[1]) then return 0 end
+redis.call('ZADD', KEYS[1], now + tonumber(ARGV[3]), ARGV[2])
+redis.call('PEXPIRE', KEYS[1], tonumber(ARGV[3]) + 60000)
+return 1
+"""
 
 
 class ClientManager:
-    def __init__(self, settings: Settings, repos: Repos, encryptor: Encryptor) -> None:
+    def __init__(self, settings: Settings, repos: Repos, encryptor: Encryptor, redis: Redis) -> None:
         self.settings = settings
         self.repos = repos
         self.encryptor = encryptor
-        self._limiters: dict[str, anyio.CapacityLimiter] = {}
+        self.redis = redis
+        self._sem_acquire = redis.register_script(SEM_ACQUIRE)
         self.adapter_factory: Callable[[dict[str, Any]], MCPServerAdapter] = self._default_factory
 
     def net_policy_for(self, server: dict[str, Any]) -> NetPolicy:
@@ -65,14 +88,43 @@ class ClientManager:
             verify_tls=bool(cfg.get("verify_tls", True)),
         )
 
-    def limiter(self, server: dict[str, Any]) -> anyio.CapacityLimiter:
-        key = server["_id"]
-        size = max(1, int(server.get("max_concurrent_calls", 10)))
-        lim = self._limiters.get(key)
-        if lim is None or lim.total_tokens != size:
-            lim = anyio.CapacityLimiter(size)
-            self._limiters[key] = lim
-        return lim
+    @staticmethod
+    def semaphore_key(server: dict[str, Any]) -> str:
+        return f"sem:srv:{server['_id']}"
+
+    async def in_flight(self, server: dict[str, Any]) -> int:
+        """Calls currently holding a slot for ``server`` across all replicas."""
+        key = self.semaphore_key(server)
+        now_ms = int(time.time() * 1000)
+        return int(await self.redis.zcount(key, now_ms, "+inf"))
+
+    async def _acquire_slot(self, server: dict[str, Any]) -> tuple[str, str]:
+        key = self.semaphore_key(server)
+        limit = max(1, int(server.get("max_concurrent_calls", 10)))
+        wait = float(server.get("request_timeout_seconds", 30))
+        # The slot outlives the longest call this server allows; after that a dead holder's slot is reclaimed.
+        hold_ms = int((wait + float(server.get("connection_timeout_seconds", 10)) + 30) * 1000)
+        token = secrets.token_hex(12)
+        delay = 0.02
+        try:
+            with anyio.fail_after(wait):
+                while not int(await self._sem_acquire(keys=[key], args=[limit, token, hold_ms])):
+                    await anyio.sleep(delay)
+                    delay = min(delay * 2, 0.5)
+        except TimeoutError as exc:
+            raise UpstreamError("unavailable", "Server concurrency limit reached") from exc
+        except UpstreamError:
+            raise
+        except Exception as exc:  # Redis unavailable: fail closed, like the other hard limits
+            log.error("upstream.concurrency_unavailable", error=type(exc).__name__)
+            raise GatewayError(ErrorCode.DEPENDENCY_UNAVAILABLE, "Concurrency control is unavailable.") from exc
+        return key, token
+
+    async def _release_slot(self, key: str, token: str) -> None:
+        try:
+            await self.redis.zrem(key, token)
+        except Exception as exc:  # noqa: BLE001 - the slot expires on its own
+            log.warning("upstream.concurrency_release_failed", error=type(exc).__name__)
 
     @asynccontextmanager
     async def session(self, server: dict[str, Any]) -> AsyncIterator[MCPServerAdapter]:
@@ -86,14 +138,10 @@ class ClientManager:
 
     @asynccontextmanager
     async def limited_session(self, server: dict[str, Any]) -> AsyncIterator[MCPServerAdapter]:
-        lim = self.limiter(server)
-        try:
-            with anyio.fail_after(float(server.get("request_timeout_seconds", 30))):
-                await lim.acquire()
-        except TimeoutError as exc:
-            raise UpstreamError("unavailable", "Server concurrency limit reached") from exc
+        key, token = await self._acquire_slot(server)
         try:
             async with self.session(server) as adapter:
                 yield adapter
         finally:
-            lim.release()
+            with anyio.CancelScope(shield=True):
+                await self._release_slot(key, token)

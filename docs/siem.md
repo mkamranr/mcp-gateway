@@ -17,8 +17,9 @@ sidecar.
   API replica is delivered, not skipped.
 - **Duplicates are rare but possible.** After a crash between "sent" and "recorded", or after a Redis loss,
   some events of the last 2 minutes may be sent twice. De-duplicate on `event_id` in the SIEM if you need to.
-- **One sender.** With several worker replicas, one holds a 60 s lease and forwards. Another takes over if it
-  dies.
+- **One sender.** With several worker replicas, one holds a 60 s lease, renewed before every batch, and forwards.
+  A worker that loses the lease stops before moving the cursor. Another worker takes over at once when the holder
+  stops cleanly, or within 60 s if it dies.
 - **Enabling starts from now.** Turning forwarding on does not replay the existing audit history. Use the
   audit export (CSV/JSON) for a one-off backfill.
 - **No impact on tool calls.** Forwarding never runs in the request path, so a slow or failed collector can't

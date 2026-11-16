@@ -41,6 +41,12 @@ class Settings(BaseSettings):
     mongodb_uri: str = "mongodb://mongodb:27017"
     mongodb_database: str = "mcp_gateway"
     redis_url: str = "redis://redis:6379/0"
+    # High availability: when set, the Redis master is discovered through these Sentinels ("host:port,host:port")
+    # under the service name REDIS_SENTINEL_MASTER. Password, database and TLS (rediss://) still come from REDIS_URL;
+    # its host is then ignored. Redis Cluster is not supported (multi-key Lua scripts and streams).
+    redis_sentinels: Annotated[list[str], NoDecode] = Field(default_factory=list)
+    redis_sentinel_master: str = "mgw"
+    redis_sentinel_password: str = Field(default="", repr=False)  # if the Sentinels themselves require auth
 
     session_secret: str = Field(default="", repr=False)
     data_encryption_key: str = Field(default="", repr=False)
@@ -89,7 +95,8 @@ class Settings(BaseSettings):
     health_check_interval_seconds: float = 60.0
 
     @field_validator(
-        "upstream_host_allowlist", "stdio_executable_allowlist", "cors_allowed_origins", mode="before"
+        "upstream_host_allowlist", "stdio_executable_allowlist", "cors_allowed_origins", "redis_sentinels",
+        mode="before"
     )
     @classmethod
     def _split_csv(cls, v: object) -> object:
@@ -115,6 +122,10 @@ class Settings(BaseSettings):
                 raise ValueError("BOOTSTRAP_ADMIN_PASSWORD must be at least 12 characters")
             if "*" in self.cors_allowed_origins:
                 raise ValueError("Wildcard CORS origins are not permitted")
+        for s in self.redis_sentinels:
+            host, _, port = s.rpartition(":")
+            if not host or not port.isdigit():
+                raise ValueError(f"REDIS_SENTINELS entries must be host:port, got {s!r}")
         if self.data_encryption_key:
             self.encryption_key_bytes()  # raises if malformed
         elif self.app_env == "production":

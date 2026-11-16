@@ -1,0 +1,23 @@
+# Several API replicas and workers on one host (or as the starting point for a multi-host setup):
+#
+#   docker compose -f docker-compose.yml -f docker-compose.ha.yml up -d --wait
+#   docker compose -f docker-compose.yml -f docker-compose.ha.yml up -d --scale gateway-api=4   # resize later
+#
+# web-ui (nginx) spreads requests over every gateway-api replica and picks up added or replaced ones within
+# ~10 s. Sessions, quotas, the per-server concurrency cap and approval jobs live in Redis and MongoDB, so any
+# replica can serve any request. Leased work (SIEM forwarding, health checks) runs on one worker at a time and
+# moves to another when it stops. See docs/high-availability.md, including what this does *not* cover on a
+# single host (MongoDB and Redis are still single instances here).
+services:
+  gateway-api:
+    deploy:
+      replicas: 2
+    # Time for in-flight requests to finish on shutdown (uvicorn drains on SIGTERM).
+    stop_grace_period: 30s
+
+  worker:
+    deploy:
+      replicas: 2
+    # A worker finishes the approved call it is running before it exits. A call still running when the grace
+    # period ends is picked up again by another worker; execution is claimed atomically, so it never runs twice.
+    stop_grace_period: 60s

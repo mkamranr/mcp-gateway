@@ -3,6 +3,13 @@ SIEM forwarding.
 
 Run with ``python -m app.workers.main``. It shares the application modules with the API but
 runs as a separate process, so long tool calls never occupy web workers.
+
+Several workers can run at once (on one host or many):
+* approval jobs come from a Redis Streams consumer group, and execution claims each approval atomically;
+* expiry and re-queueing are atomic state transitions, safe to run anywhere;
+* SIEM forwarding and upstream health checks run on whichever worker holds the Redis lease;
+* audit retention runs at most once per interval across all workers;
+* each worker reports its own heartbeat (``workers:heartbeat``, one entry per host).
 """
 
 from __future__ import annotations
@@ -11,29 +18,35 @@ import asyncio
 import os
 import signal
 import socket
+import time
 from datetime import timedelta
 from typing import Any
 
 from app.config import get_settings
 from app.container import Container
 from app.core.ids import utcnow
+from app.core.lease import Lease
 from app.core.logging import configure_logging, get_logger
 from app.migrations.indexes import ensure_indexes
 from app.services.approval_service import JOB_GROUP, JOB_STREAM
+from app.workers.heartbeat import HEARTBEAT_KEY
 
 log = get_logger("worker")
 
 RETENTION_INTERVAL_SECONDS = 6 * 3600
 MIN_RETENTION_DAYS = 30
 SIEM_INTERVAL_SECONDS = 2
+RETENTION_CHECK_SECONDS = 600  # how often a worker offers to run retention; the gate allows one run per interval
 
 
 class Worker:
     def __init__(self, container: Container) -> None:
         self.c = container
-        self.name = f"{socket.gethostname()}-{os.getpid()}"
+        self.host = socket.gethostname()
+        self.name = f"{self.host}-{os.getpid()}"
         self._stop = asyncio.Event()
         self._siem_task: asyncio.Task[int] | None = None
+        self._health_task: asyncio.Task[int] | None = None
 
     def stop(self) -> None:
         self._stop.set()
@@ -77,11 +90,17 @@ class Worker:
             return "error"
 
     async def maintenance_once(self) -> None:
-        await self.c.redis.set("worker:heartbeat", utcnow().isoformat(), ex=120)
+        await self.c.redis.zadd(HEARTBEAT_KEY, {self.host: time.time()})
+        await self.c.redis.zremrangebyscore(HEARTBEAT_KEY, "-inf", time.time() - 24 * 3600)  # long-gone hosts
         expired = await self.c.approvals.expire_due()
         requeued = await self.c.approvals.requeue_stuck()
         if expired or requeued:
             log.info("worker.maintenance", expired=expired, requeued=requeued)
+
+    async def retention_due(self) -> bool:
+        """At most one retention run per RETENTION_INTERVAL_SECONDS across all workers (the gate is not released,
+        it simply expires). A run interrupted halfway is harmless: deletion is idempotent."""
+        return bool(await self.c.redis.set("gate:retention", self.name, nx=True, ex=RETENTION_INTERVAL_SECONDS))
 
     async def retention_once(self) -> int:
         """Delete audit events older than each tenant's retention period (spec §27 audit retention)."""
@@ -109,18 +128,29 @@ class Worker:
             log.error("worker.siem_error", error=type(exc).__name__)
             return 0
 
-    async def health_checks_once(self) -> None:
+    async def health_checks_once(self) -> int:
+        """Check every enabled server, on one worker only (lease), so upstreams aren't probed once per worker and
+        health history has one entry per round. Returns the number of servers checked."""
+        interval = float(self.c.settings.health_check_interval_seconds)
+        lease = Lease(self.c.redis, "lease:health-checks", self.name, max(interval, 30))
+        if not await lease.acquire():
+            return 0
         servers = [s async for s in self.c.repos.servers.col.find({"enabled": True, "archived": {"$ne": True}})]
+        checked = 0
         for s in servers:
+            if self._stop.is_set() or not await lease.renew():
+                break
             try:
                 await self.c.registry.test_connection(None, s)
             except Exception as exc:  # noqa: BLE001
                 log.warning("worker.health_check_failed", server_id=s["_id"], error=type(exc).__name__)
+            checked += 1
+        return checked
 
     async def run(self) -> None:
         await self.ensure_group()
         last_maint = last_health = last_siem = 0.0
-        last_retention = float("-inf")  # run once at startup, then every RETENTION_INTERVAL_SECONDS
+        last_retention = float("-inf")  # offer at startup, then every RETENTION_CHECK_SECONDS
         loop = asyncio.get_running_loop()
         log.info("worker.started", name=self.name)
         while not self._stop.is_set():
@@ -129,11 +159,13 @@ class Worker:
                 if now - last_maint >= self.c.settings.worker_poll_interval_seconds * 5:
                     await self.maintenance_once()
                     last_maint = now
-                if now - last_retention >= RETENTION_INTERVAL_SECONDS:
-                    await self.retention_once()
+                if now - last_retention >= RETENTION_CHECK_SECONDS:
                     last_retention = now
-                if now - last_health >= self.c.settings.health_check_interval_seconds:
-                    asyncio.create_task(self.health_checks_once())  # noqa: RUF006
+                    if await self.retention_due():
+                        await self.retention_once()
+                if now - last_health >= self.c.settings.health_check_interval_seconds and (
+                        self._health_task is None or self._health_task.done()):
+                    self._health_task = asyncio.create_task(self.health_checks_once())  # one round at a time
                     last_health = now
                 if now - last_siem >= SIEM_INTERVAL_SECONDS and (self._siem_task is None or self._siem_task.done()):
                     self._siem_task = asyncio.create_task(self.siem_once())  # never blocks approval jobs
@@ -142,7 +174,20 @@ class Worker:
             except Exception as exc:  # noqa: BLE001
                 log.error("worker.loop_error", error=type(exc).__name__)
                 await asyncio.sleep(2)
+        await self.shutdown()
         log.info("worker.stopped")
+
+    async def shutdown(self) -> None:
+        """Hand leased work to the other workers immediately rather than after the leases expire."""
+        for task in (self._siem_task, self._health_task):
+            if task is not None and not task.done():
+                task.cancel()
+        try:
+            await self.c.siem.release_lease(self.name)
+            await Lease(self.c.redis, "lease:health-checks", self.name, 1).release()
+            await self.c.redis.zrem(HEARTBEAT_KEY, self.host)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("worker.shutdown_release_failed", error=type(exc).__name__)
 
 
 async def main() -> None:
