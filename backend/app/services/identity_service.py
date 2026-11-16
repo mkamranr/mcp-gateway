@@ -19,6 +19,7 @@ from app.models.identity import (
     UserCreate,
     credential_to_api,
 )
+from app.models.policy import Constraints, Principals, Resources
 from app.repositories.collections import Repos
 from app.services.audit_service import AuditService
 from app.services.auth_service import AuthService
@@ -28,10 +29,11 @@ DEFAULT_DENY_POLICY = {
     "description": "Fallback decision when no policy allows a request. Cannot be edited or deleted.",
     "effect": "deny",
     "kind": "default_deny",
-    "principals": {"types": ["*"], "ids": ["*"]},
-    "resources": {"servers": ["*"], "tools": ["*"]},
+    # Built from the policy models so the stored document has the same complete shape as API-created ones.
+    "principals": Principals(types=["*"], ids=["*"]).model_dump(),
+    "resources": Resources(servers=["*"], tools=["*"]).model_dump(),
     "actions": ["discover", "invoke"],
-    "constraints": {},
+    "constraints": Constraints().model_dump(),
     "priority": 1_000_000,
     "enabled": True,
     "system": True,

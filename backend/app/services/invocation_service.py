@@ -129,7 +129,9 @@ class InvocationService:
             await self.audit.record(
                 principal.tenant_id, "tool.invocation.rejected", principal=principal, invocation_id=inv_id,
                 approval_id=ctx.approval_id, resource=resource, decision=decision,
-                policy_ids=policy.policy_ids if policy else [], reason_code=(policy.reason_code if policy else code),
+                policy_ids=policy.policy_ids if policy else [],
+                # The policy's reason only explains a policy denial; later refusals record their own code.
+                reason_code=(policy.reason_code if policy and policy.decision == "DENY" else code),
                 status=status, input_hash=args_hash, duration_ms=int((time.perf_counter() - started) * 1000),
                 metadata={**base_meta, "error_code": code.value,
                           "explanation": policy.explanation if policy else None, **extra},

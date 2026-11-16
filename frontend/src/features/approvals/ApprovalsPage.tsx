@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Bot, CheckCircle2, Clock, Loader2, Search, ShieldAlert, XCircle } from 'lucide-react'
+import { Bot, CheckCircle2, Clock, Loader2, Search, XCircle } from 'lucide-react'
 import { useAuth } from '../../app/auth'
 import { api, ApiError, errorMessage } from '../../services/api'
 import { dateTime, shortHash, timeAgo } from '../../services/format'
@@ -42,7 +42,7 @@ export function ApprovalsPage() {
       <Panel>
         <div className="filters">
           <div className="search"><Search size={14} /><input placeholder="Tool name" value={tool} onChange={e => { setTool(e.target.value); reset() }} /></div>
-          <input placeholder="Requester (agent id or name)" value={requester} onChange={e => { setRequester(e.target.value); reset() }} />
+          <input placeholder="Requester" title="Agent id or name" value={requester} onChange={e => { setRequester(e.target.value); reset() }} />
           <select value={risk} onChange={e => { setRisk(e.target.value); reset() }} aria-label="Risk"><option value="">Any risk</option><option>low</option><option>medium</option><option>high</option><option>critical</option></select>
         </div>
         <QueryState q={q} empty={d => d.items.length === 0} emptyText={tab === 'pending' ? 'No requests are waiting for approval.' : 'No requests in this state.'}>
@@ -104,7 +104,7 @@ function ApprovalDetail({ id, onClose }: { id: string; onClose: () => void }) {
     </>}>
       <QueryState q={q}>{a => <>
         <div className="approval-title" style={{ marginBottom: 10 }}><b className="mono" style={{ fontSize: 13 }}>{a.gateway_name}</b><RiskBadge risk={a.risk_level} /><Badge color={STATUS_COLOR[a.status]}>{a.status.replace(/_/g, ' ')}</Badge></div>
-        {a.separation_of_duties_warning && <Callout kind="danger"><ShieldAlert size={12} /> You requested this call, or own the requesting agent. Separation of duties means someone else has to approve it.</Callout>}
+        {a.status === 'PENDING' && a.separation_of_duties_warning && <Callout kind="danger">You requested this call, or own the requesting agent. Separation of duties means someone else has to approve it.</Callout>}
         {a.status === 'PENDING' && !a.can_decide && !a.separation_of_duties_warning && <Callout kind="warn">You can't decide this request: you lack an approver role for it, or you already approved it.</Callout>}
         {a.changes_since_request && a.changes_since_request.length > 0 && <Callout kind="warn">Changed since the request: {a.changes_since_request.map(c => c.replace(/_/g, ' ')).join(', ')}. The call is revalidated against current state before it runs.</Callout>}
         {a.integrity && a.integrity !== 'verified' && <Callout kind="danger">Argument integrity check failed ({a.integrity}). Don't approve. Execution would be aborted.</Callout>}

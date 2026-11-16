@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Copy, History, Lock, Pencil, Play, Plus, Trash2 } from 'lucide-react'
 import { useAuth, useTenantId } from '../../app/auth'
 import { api, errorMessage } from '../../services/api'
-import { dateTime } from '../../services/format'
+import { dateTime, normalizePolicy } from '../../services/format'
 import type { Agent, Decision, Page, Policy, Tool, TenantUser } from '../../services/types'
 import { Badge, Callout, Confirm, DecisionBadge, Drawer, Empty, Field, JsonView, Loading, PageHeading, Panel, QueryState, Status, Switch, Tabs, useToast } from '../../components/ui'
 import { PolicyEditor } from './PolicyEditor'
@@ -28,7 +28,7 @@ export function PoliciesPage() {
 function PolicyList({ canWrite, onEdit }: { canWrite: boolean; onEdit: (p: Policy) => void }) {
   const [params] = useSearchParams()
   const highlight = params.get('id')
-  const q = useQuery({ queryKey: ['policies'], queryFn: () => api.get<Page<Policy>>('/policies', { limit: 200 }) })
+  const q = useQuery({ queryKey: ['policies'], queryFn: async () => { const r = await api.get<Page<Policy>>('/policies', { limit: 200 }); return { ...r, items: r.items.map(normalizePolicy) } } })
   const qc = useQueryClient()
   const toast = useToast()
   const [deleting, setDeleting] = useState<Policy | null>(null)

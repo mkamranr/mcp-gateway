@@ -63,7 +63,12 @@ export function ServerWizard({ server, onClose, onSaved }: { server?: Server; on
   const [serverErr, setServerErr] = useState<ApiError | null>(null)
   const qc = useQueryClient()
   const toast = useToast()
-  const set = <K extends keyof Form>(k: K, v: Form[K]) => setF(x => ({ ...x, [k]: v }))
+  // Validation messages appear once the user has edited something on the current step (or when editing).
+  const [touched, setTouched] = useState<Set<number>>(() => new Set())
+  const set = <K extends keyof Form>(k: K, v: Form[K]) => {
+    setF(x => ({ ...x, [k]: v }))
+    setTouched(t => (t.has(step) ? t : new Set(t).add(step)))
+  }
   const errs = stepErrors(f, step, editing)
 
   const save = useMutation({
@@ -185,7 +190,7 @@ export function ServerWizard({ server, onClose, onSaved }: { server?: Server; on
         </dl>
       </>}
 
-      {errs.length > 0 && step < 5 && <Callout kind="warn">{errs.map(e => <div key={e}>{e}</div>)}</Callout>}
+      {errs.length > 0 && step < 5 && (editing || touched.has(step)) && <Callout kind="warn">{errs.map(e => <div key={e}>{e}</div>)}</Callout>}
     </Modal>
   )
 }

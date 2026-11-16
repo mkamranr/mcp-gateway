@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, Request, Response
 
 from app.api.deps import (
     CSRF_COOKIE,
+    CSRF_HEADER,
     client_ip,
     get_container,
     get_principal,
@@ -16,6 +17,8 @@ from app.api.deps import (
     session_cookie_name,
 )
 from app.container import Container
+from app.core.crypto import constant_time_equals
+from app.core.errors import ErrorCode, GatewayError
 from app.core.identity import SECURITY, Principal
 from app.models.identity import (
     AgentKeyCreate,
@@ -74,8 +77,13 @@ async def logout(request: Request, response: Response, c: Container = Depends(ge
     if sid:
         try:
             principal, session = await c.auth.resolve_session(sid)
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001  (expired or unknown session: nothing to protect, just clear cookies)
             principal = None
+        if principal is not None:
+            # A live session may only be ended by the console itself, not by a cross-site request.
+            token = request.headers.get(CSRF_HEADER, "")
+            if not token or not constant_time_equals(token, session["csrf"]):
+                raise GatewayError(ErrorCode.CSRF_FAILED, "Missing or invalid CSRF token.")
         await c.auth.logout(sid, principal)
     response = Response(status_code=204)
     response.delete_cookie(session_cookie_name(c.settings.cookie_secure), path="/")

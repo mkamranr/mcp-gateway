@@ -32,6 +32,9 @@ async def test_invalid_arguments_rejected_before_dispatch(scenario):
         r = await s.invoke("get_attendance_summary", args)
         assert r.status_code == 422 and r.json()["error"]["code"] == "TOOL_ARGUMENT_VALIDATION_FAILED"
     assert mock_mcp_server.CALLS["get_attendance_summary"] == 0
+    # The audit trail names the real reason, not the policy's "ALLOWED".
+    events = (await s.admin.get("/api/v1/audit/events", params={"event_type": "tool.invocation.rejected"})).json()["items"]
+    assert events and {e["reason_code"] for e in events} == {"TOOL_ARGUMENT_VALIDATION_FAILED"}
 
 
 async def test_disabled_tool_cannot_be_invoked_even_if_cached(scenario):

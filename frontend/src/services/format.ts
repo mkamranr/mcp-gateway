@@ -1,3 +1,5 @@
+import type { Policy } from './types'
+
 export function cn(...v: (string | false | null | undefined)[]) { return v.filter(Boolean).join(' ') }
 
 export function timeAgo(iso?: string | null): string {
@@ -44,4 +46,19 @@ export function hasRole(roles: string[] | undefined, ...wanted: string[]): boole
 
 export function initials(name: string): string {
   return name.split(/[\s._@-]+/).filter(Boolean).slice(0, 2).map(x => x[0]?.toUpperCase()).join('') || '?'
+}
+
+/** Fill optional policy arrays so older stored policies (missing e.g. roles or risk_levels) render safely. */
+export function normalizePolicy<P extends Policy>(p: P): P {
+  const pr: Partial<Policy['principals']> = p.principals || {}
+  const rs: Partial<Policy['resources']> = p.resources || {}
+  const cs: Partial<Policy['constraints']> = p.constraints || {}
+  return {
+    ...p,
+    principals: { types: pr.types ?? [], ids: pr.ids ?? [], roles: pr.roles ?? [] },
+    resources: { servers: rs.servers ?? [], tools: rs.tools ?? [], risk_levels: rs.risk_levels ?? [] },
+    actions: p.actions ?? [],
+    constraints: { ...cs, environments: cs.environments ?? [], time_windows: cs.time_windows ?? [], source_cidrs: cs.source_cidrs ?? [] } as Policy['constraints'],
+    broad: p.broad ?? [],
+  }
 }

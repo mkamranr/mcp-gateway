@@ -49,6 +49,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     })
   }, [qc])
 
+  // Drop every cached (tenant-scoped) query except the principal itself. qc.clear() would also remove the
+  // 'me' query the observer above is attached to, so new data set afterwards would never re-render the app.
+  const resetCache = () => qc.removeQueries({ predicate: q => q.queryKey[0] !== 'me' })
+
   const me = meQ.data ?? null
   const value: AuthState = {
     me,
@@ -56,21 +60,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     login: async (username, password) => {
       const res = await api.post<Me>('/auth/login', { username, password })
       setCsrfToken(res.csrf_token)
-      qc.clear()
+      resetCache()
       qc.setQueryData(['me'], res)
       return res
     },
     logout: async () => {
       try { await api.post('/auth/logout') } finally {
         setCsrfToken(null)
-        qc.clear()
+        resetCache()
         qc.setQueryData(['me'], null)
       }
     },
     switchTenant: async (tenantId) => {
       const res = await api.post<Me>('/auth/switch-tenant', { tenant_id: tenantId })
-      // Drop every cached tenant-scoped query, then load the new principal.
-      qc.clear()
+      resetCache()
       qc.setQueryData(['me'], { ...res, csrf_token: me?.csrf_token })
     },
     can: (...roles) => !!me && (me.is_platform_admin || hasRole(me.roles, ...roles)),

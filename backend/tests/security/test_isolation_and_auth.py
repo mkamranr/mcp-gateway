@@ -134,6 +134,20 @@ async def test_csrf_required_for_cookie_mutations(app):
         assert (await http.get("/api/v1/servers")).status_code == 200  # safe methods do not need CSRF
 
 
+async def test_logout_requires_csrf_for_a_live_session(app):
+    """A cross-site request must not be able to end an administrator's session (forced-logout CSRF)."""
+    async with make_client(app) as http:
+        r = await http.post("/api/v1/auth/login", json={"username": "admin", "password": ADMIN_PASSWORD})
+        csrf = r.json()["csrf_token"]
+        r = await http.post("/api/v1/auth/logout")
+        assert r.status_code == 403 and r.json()["error"]["code"] == "CSRF_FAILED"
+        assert (await http.get("/api/v1/auth/me")).status_code == 200  # still signed in
+        assert (await http.post("/api/v1/auth/logout", headers={"X-CSRF-Token": csrf})).status_code == 204
+        assert (await http.get("/api/v1/auth/me")).status_code == 401
+        # With no live session there is nothing to protect: logout just clears cookies.
+        assert (await http.post("/api/v1/auth/logout")).status_code == 204
+
+
 async def test_session_cookie_flags_and_fixation(app):
     async with make_client(app) as http:
         r = await http.post("/api/v1/auth/login", json={"username": "admin", "password": ADMIN_PASSWORD},
@@ -143,9 +157,11 @@ async def test_session_cookie_flags_and_fixation(app):
         assert "HttpOnly" in session_cookie and "SameSite=strict" in session_cookie.lower().replace("samesite=strict", "SameSite=strict")
         sid = session_cookie.split(";")[0].split("=", 1)[1]
         assert sid != "attacker-chosen-session-id" and len(sid) >= 40
+        csrf = r.json()["csrf_token"]
     # logout invalidates the server-side session even if the cookie is replayed
     async with make_client(app) as http:
-        await http.post("/api/v1/auth/logout", headers={"Cookie": f"mgw_session={sid}"})
+        r = await http.post("/api/v1/auth/logout", headers={"Cookie": f"mgw_session={sid}", "X-CSRF-Token": csrf})
+        assert r.status_code == 204
         r = await http.get("/api/v1/auth/me", headers={"Cookie": f"mgw_session={sid}"})
         assert r.status_code == 401
 

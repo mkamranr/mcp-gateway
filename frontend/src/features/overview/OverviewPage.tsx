@@ -26,6 +26,12 @@ function OverviewBody({ d }: { d: Overview }) {
   const decisions = Object.entries(d.decisions || {}).filter(([, v]) => v > 0).map(([k, v]) => ({ name: k, value: v }))
   const totalDecisions = decisions.reduce((a, b) => a + b.value, 0)
   const maxTop = Math.max(1, ...d.top_tools.map(t => t.count))
+  // Always show the full 7-day window (UTC dates, as returned by the API), with zero for quiet days.
+  const byDate = new Map(d.series.map(s => [s.date, s]))
+  const week = Array.from({ length: 7 }, (_, i) => new Date(Date.now() - (6 - i) * 86_400_000).toISOString().slice(0, 10)).map(date => {
+    const s = byDate.get(date) ?? { date, count: 0, completed: 0, failed: 0, rejected: 0, pending: 0, tool_error: 0 }
+    return { ...s, bad: s.rejected + s.failed + s.tool_error, label: date.slice(5) }
+  })
   return (
     <>
       <div className="metric-grid">
@@ -42,7 +48,7 @@ function OverviewBody({ d }: { d: Overview }) {
             <div className="chart-legend"><span><i className="dot green" />Completed</span><span><i className="dot red" />Denied / failed</span></div>
             <div className="chart">
               <ResponsiveContainer>
-                <AreaChart data={d.series.map(s => ({ ...s, bad: s.rejected + s.failed + s.tool_error, label: s.date.slice(5) }))}>
+                <AreaChart data={week}>
                   <defs>
                     <linearGradient id="g1" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#20c58a" stopOpacity={0.35} /><stop offset="1" stopColor="#20c58a" stopOpacity={0} /></linearGradient>
                     <linearGradient id="g2" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#ef626c" stopOpacity={0.3} /><stop offset="1" stopColor="#ef626c" stopOpacity={0} /></linearGradient>

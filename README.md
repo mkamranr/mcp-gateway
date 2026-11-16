@@ -88,6 +88,19 @@ Docker Compose, single host, air-gap ready. See [docs/deployment.md](docs/deploy
 make check     # ruff + mypy + tsc + pytest (unit, integration, contract, security) + production build
 ```
 
+GitHub Actions (`.github/workflows/ci.yml`) runs on every push and pull request to `main`:
+
+| Job | What it checks |
+|---|---|
+| Backend | ruff, mypy, full pytest suite against real MongoDB 7 and Redis 7 service containers |
+| Frontend | typecheck, production build, and `check:offline`, which fails if the bundle references any external origin |
+| Dependency scan | `pip-audit` on the locked production dependencies, `npm audit --omit=dev` (high and above) |
+| Compose smoke test | builds the images, **blocks all container egress to public addresses**, starts the full stack with `--pull never`, then checks health, published ports, MongoDB auth, sign-in, CSRF, logout and security headers through the web-ui proxy |
+
+`release-bundle.yml` (run manually) builds the air-gap bundle, deletes every image, then verifies,
+loads and starts the bundle with egress blocked, as an air-gapped host would. Dependabot proposes
+weekly updates for uv, npm, Actions and base images.
+
 ## Documentation
 
 [Architecture](docs/architecture.md) · [Security model](docs/security-model.md) ·
