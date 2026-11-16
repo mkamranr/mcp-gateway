@@ -143,6 +143,15 @@ async def emit(container: Any, n: int = 3, severity: str = "info", prefix: str =
     return ids
 
 
+async def until(cond: Any, timeout: float = 5.0) -> None:
+    """The sender returns once the bytes are written; the receiver task may not have parsed them yet."""
+    for _ in range(int(timeout / 0.02)):
+        if cond():
+            return
+        await asyncio.sleep(0.02)
+    raise AssertionError("receiver did not get the expected data in time")
+
+
 def payload_of(msg: str) -> str:
     # RFC 5424: PRI VERSION SP TIMESTAMP SP HOSTNAME SP APP-NAME SP PROCID SP MSGID SP SD SP MSG
     return msg.split(" ", 7)[7]
@@ -156,6 +165,7 @@ async def test_tcp_json_delivery_in_order_without_duplicates(admin, container):
         ids = await emit(container, 5)
         sent = await container.siem.forward_once("w1")
         assert sent >= 5
+        await until(lambda: len(rx.messages) >= sent)
         got = [json.loads(payload_of(m)) for m in rx.messages]
         drill = [(g, m) for g, m in zip(got, rx.messages, strict=True) if g["event_type"].startswith("drill.event")]
         assert sorted(g["event_id"] for g, _ in drill) == sorted(ids)  # each exactly once
@@ -180,6 +190,7 @@ async def test_enabling_starts_from_now(admin, container):
         await configure(admin, port=rx.port)
         new = await emit(container, 1, prefix="after.enable")
         await container.siem.forward_once("w1")
+        await until(lambda: any(new[0] in m for m in rx.messages))
         types = [json.loads(payload_of(m))["event_id"] for m in rx.messages]
         assert new[0] in types and not set(old) & set(types)
     finally:
@@ -202,6 +213,7 @@ async def test_outage_loses_nothing_and_is_audited_once(admin, container, monkey
     try:
         await configure(admin, port=rx.port)  # saving the config also clears the backoff
         await container.siem.forward_once("w1")
+        await until(lambda: all(any(i in m for m in rx.messages) for i in ids))
         got = [json.loads(payload_of(m))["event_id"] for m in rx.messages]
         assert all(i in got for i in ids)  # everything written during the outage arrives
         assert (await admin.get("/api/v1/siem/status")).json()["failing"] is False
@@ -225,6 +237,7 @@ async def test_late_committed_event_inside_overlap_is_still_delivered(admin, con
                 "event_type": "late.event", "severity": "info", "metadata": {}}
         await container.repos.audit.append("ten_x", late)
         await container.siem.forward_once("w1")
+        await until(lambda: any(late["event_id"] in m for m in rx.messages))
         got = [json.loads(payload_of(m))["event_id"] for m in rx.messages]
         assert got.count(late["event_id"]) == 1
     finally:
@@ -240,6 +253,7 @@ async def test_filters_by_severity_and_event_type(admin, container):
         await emit(container, 1, severity="critical", prefix="other.thing")
         keep += await emit(container, 1, severity="critical", prefix="drill.keep")
         await container.siem.forward_once("w1")
+        await until(lambda: len(rx.messages) >= len(keep))
         got = [json.loads(payload_of(m))["event_id"] for m in rx.messages]
         assert sorted(got) == sorted(keep)
         assert (await admin.get("/api/v1/siem/status")).json()["pending_events"] == 0  # filtered still advance
@@ -257,7 +271,7 @@ async def test_tls_requires_the_configured_ca(admin, container):
         assert "SSL" in (await admin.get("/api/v1/siem/status")).json()["last_error"].upper()
         await configure(admin, transport="syslog_tls", port=rx.port, tls_ca_pem=ca)
         assert await container.siem.forward_once("w1") >= 1
-        assert rx.messages
+        await until(lambda: bool(rx.messages))
     finally:
         await rx.stop()
 
@@ -293,6 +307,7 @@ async def test_https_splunk_hec_with_write_only_token(admin, container):
         assert cfg["has_http_auth_value"] is True and TOKEN not in json.dumps(cfg)
         ids = await emit(container, 3)
         await container.siem.forward_once("w1")
+        await until(lambda: bool(rx.requests))
         req = rx.requests[0]
         assert req["headers"]["authorization"] == TOKEN and req["line"].startswith("POST /services/collector/event")
         events = [json.loads(line) for line in req["body"].splitlines()]
@@ -316,6 +331,7 @@ async def test_http_error_status_is_a_failure(admin, container):
         rx.status = 200
         await container.redis.delete(siem_service.STATUS_KEY + ":backoff")
         assert await container.siem.forward_once("w1") >= 1
+        await until(lambda: len(rx.requests) >= 2)
         body = rx.requests[-1]["body"]
         assert all(json.loads(line)["source"] == "mcp-gateway" for line in body.splitlines())  # ndjson
     finally:
@@ -340,7 +356,9 @@ async def test_connection_test_endpoint(admin, container):
     try:
         await configure(admin, port=rx.port, enabled=False)
         r = (await admin.post("/api/v1/siem/test")).json()
-        assert r["ok"] and json.loads(payload_of(rx.messages[0]))["event_type"] == "siem.test"
+        assert r["ok"]
+        await until(lambda: bool(rx.messages))
+        assert json.loads(payload_of(rx.messages[0]))["event_type"] == "siem.test"
     finally:
         await rx.stop()
     await configure(admin, port=1, enabled=False)
