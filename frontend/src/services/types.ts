@@ -17,6 +17,23 @@ export interface Me {
   version: string
   csrf_token?: string | null
   must_change_password?: boolean
+  auth_source?: 'local' | 'oidc'
+}
+
+export interface SsoPublicConfig { enabled: boolean; display_name: string; local_login: 'enabled' | 'break_glass_only' }
+export interface SsoGroupRule { group: string; tenant_id: string; roles: string[] }
+export interface SsoConfig {
+  enabled: boolean; display_name: string; issuer: string; client_id: string
+  token_auth_method: 'client_secret_basic' | 'client_secret_post'; scopes: string[]; allowed_algorithms: string[]
+  username_claim: string; email_claim: string; name_claim: string; groups_claim: string
+  group_rules: SsoGroupRule[]; platform_admin_groups: string[]; jit_provisioning: boolean; link_local_accounts: boolean
+  local_login: 'enabled' | 'break_glass_only'; break_glass_usernames: string[]
+  has_client_secret: boolean; redirect_uri: string; updated_at: string | null; updated_by: string | null
+}
+export interface SsoTestResult {
+  ok: boolean; error?: string; detail?: string; authorization_endpoint?: string; token_endpoint?: string
+  userinfo_endpoint?: string | null; end_session_endpoint?: string | null; signing_keys?: number
+  signing_algorithms?: string[]; algorithm_overlap?: string[] | null
 }
 
 export interface HealthEntry { at: string; status: string; latency_ms: number; error: string | null }
@@ -127,6 +144,7 @@ export interface AuditEvent {
 export interface TenantUser {
   membership_id: string; user_id: string; username: string; email: string | null; display_name: string
   roles: string[]; status: string; user_status: string; last_login_at: string | null; created_at: string
+  auth_source?: 'local' | 'oidc'; managed_by?: 'manual' | 'oidc'
 }
 
 export interface Tenant { id: string; name: string; slug: string; status: string; settings: Record<string, any>; created_at: string }

@@ -51,3 +51,17 @@ async def test_rotation_reencrypts_secrets_and_approval_arguments(scenario, admi
     finally:
         container.encryptor._aead = old_aead
         mock_mcp_server.STATE["expected_token"] = None
+
+
+async def test_rotation_includes_the_sso_client_secret(admin, mock_idp, container):
+    from app.services.sso_service import SECRET_AAD
+
+    r = await admin.put("/api/v1/sso/config", json={"enabled": True, "issuer": mock_idp.issuer,
+                                                     "client_id": mock_idp.client_id, "client_secret": "sso-rotate-me"})
+    assert r.status_code == 200, r.text
+    old, new = container.encryptor, Encryptor(os.urandom(32))
+    report = await rotate(container.db.db, old, new)
+    assert report.rotated == 1 and not report.failed
+    doc = await container.repos.settings.col.find_one({"key": "oidc"})
+    assert new.decrypt(doc["value"]["client_secret_enc"], SECRET_AAD) == b"sso-rotate-me"
+    assert (await rotate(container.db.db, old, new)).already_new == 1

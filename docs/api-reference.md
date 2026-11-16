@@ -31,7 +31,13 @@ Roles: P = platform_admin, T = tenant_admin, S = security_admin, A = approver, U
 | POST | `/auth/logout` | user | invalidates the session |
 | GET | `/auth/me` | user/agent | current principal and tenants |
 | POST | `/auth/switch-tenant` | user | `{tenant_id}` (must be a member) |
-| POST | `/auth/change-password` | user | `{current_password, new_password}` (≥12 chars) |
+| POST | `/auth/change-password` | user | `{current_password, new_password}` (≥12 chars). Refused for SSO accounts. |
+| GET | `/auth/oidc/config` | public | `{enabled, display_name, local_login}` for the login page |
+| GET | `/auth/oidc/login?return_to=` | public | 303 to the IdP. Sets the `mgw_oidc` flow cookie. `return_to` must be a same-origin path. |
+| GET | `/auth/oidc/callback` | public | IdP redirect target. On success sets session cookies and returns 303 to `return_to`; on failure 303 to `/?sso_error=<code>` |
+| GET | `/sso/config` | P | SSO configuration. Returns `has_client_secret` and `redirect_uri`, never the secret. |
+| PUT | `/sso/config` | P | Full configuration. `client_secret`: omit to keep, `""` to clear. Audited (`sso.config.updated`). |
+| POST | `/sso/test` | P | Discovery and JWKS check of the saved configuration |
 | POST | `/auth/agent-keys` | P T S | `{agent_id, name, scopes[], expires_at?}` → includes `secret` **once** |
 | GET | `/auth/agent-keys?agent_id=` | any | never includes secrets or hashes |
 | POST | `/auth/agent-keys/{id}/rotate` | P T S | new key (secret once). The old key is revoked. |

@@ -17,6 +17,7 @@ the install directory).
 - [Approval queue stuck or worker failure](#approval-queue-stuck-or-worker-failure)
 - [Audit export and retention](#audit-export-and-retention)
 - [Encryption key rotation](#encryption-key-rotation)
+- [Identity provider outage](#identity-provider-outage)
 - [Monitoring](#monitoring)
 
 ---
@@ -180,6 +181,28 @@ verifying that servers still connect (Test connection) and pending approvals sti
 - `API_KEY_HASH_PEPPER`: replacing it invalidates all agent keys. Plan a key re-issue.
 - MongoDB and Redis passwords: change them in the datastore, update `secrets/mongo_root_password` /
   `redis_password` and the URI files, then restart.
+
+## Identity provider outage
+
+Applies when single sign-on is enabled ([docs/sso.md](sso.md)).
+
+1. Sessions that already exist keep working until their idle or absolute timeout. New SSO sign-ins fail with
+   `idp_unreachable`.
+2. If **Local password sign-in** is *Allowed for all local accounts*, local users sign in as usual.
+3. If it is *Only break-glass accounts*, a named break-glass platform administrator signs in with
+   **Break-glass sign-in** on the login page. Each use is audited as `auth.break_glass.used` (high severity).
+   Alert on this event and review every occurrence.
+4. If the outage lasts, a break-glass administrator can temporarily switch local sign-in back to *Allowed* in
+   **Settings → Single sign-on**. This is audited as `sso.config.updated`. Switch it back afterwards.
+5. Keep break-glass credentials in a sealed, audited store (a safe or a password vault with dual control),
+   and rotate them after each use.
+
+**Removing a user's access urgently:** removing them from an IdP group takes effect at their next sign-in.
+To end an active session immediately, disable the user or their membership in **Users & Tenants**.
+
+**Rotating the IdP client secret:** create the new secret at the IdP, paste it into **Settings → Single sign-on**
+and save, then revoke the old secret at the IdP. The secret is stored encrypted with `DATA_ENCRYPTION_KEY`
+and is re-encrypted by the key rotation tool.
 
 ## Monitoring
 

@@ -130,7 +130,8 @@ class IdentityService:
                 "membership_id": m["_id"], "user_id": m["user_id"], "username": u.get("username"),
                 "email": u.get("email"), "display_name": u.get("display_name"), "roles": m.get("roles", []),
                 "status": m.get("status"), "user_status": u.get("status"), "last_login_at": u.get("last_login_at"),
-                "created_at": m.get("created_at"),
+                "created_at": m.get("created_at"), "auth_source": u.get("auth_source", "local"),
+                "managed_by": m.get("managed_by", "manual"),
             })
         return {"items": items, "next_cursor": page["next_cursor"], "total": page["total"]}
 

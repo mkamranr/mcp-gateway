@@ -25,7 +25,7 @@ from app.config import Settings
 from app.container import Container
 from app.db import Database
 from app.main import create_app
-from devtools import mock_mcp_server
+from devtools import mock_mcp_server, mock_oidc
 
 ADMIN_USER = "admin"
 ADMIN_PASSWORD = "Sup3r-Secret-Admin-Pass!"
@@ -69,6 +69,28 @@ def upstream_url() -> Iterator[str]:
 
 
 @pytest.fixture(scope="session")
+def _mock_idp_server() -> Iterator[mock_oidc.MockIdP]:
+    port = _free_port()
+    idp = mock_oidc.MockIdP(issuer=f"http://127.0.0.1:{port}")
+    server = uvicorn.Server(uvicorn.Config(mock_oidc.build_app(idp), host="127.0.0.1", port=port, log_level="error"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    for _ in range(100):
+        if server.started:
+            break
+        time.sleep(0.05)
+    yield idp
+    server.should_exit = True
+    thread.join(timeout=5)
+
+
+@pytest.fixture
+def mock_idp(_mock_idp_server: mock_oidc.MockIdP) -> mock_oidc.MockIdP:
+    _mock_idp_server.reset()
+    return _mock_idp_server
+
+
+@pytest.fixture(scope="session")
 def db_name() -> str:
     return f"mgw_test_{uuid.uuid4().hex[:10]}"
 
@@ -89,6 +111,7 @@ def settings(mongo_uri: str, db_name: str) -> Settings:
         bootstrap_admin_password=ADMIN_PASSWORD,
         bootstrap_tenant_slug="acme",
         login_max_attempts_per_window=50,
+        oidc_allow_insecure_http=True,  # the mock IdP listens on plain http://127.0.0.1
     )
 
 
@@ -162,6 +185,9 @@ class ApiClient:
 
     async def post(self, url: str, json: Any = None, headers: dict[str, str] | None = None) -> httpx.Response:
         return await self.http.post(url, json=json, headers=self._h(headers))
+
+    async def put(self, url: str, json: Any = None, headers: dict[str, str] | None = None) -> httpx.Response:
+        return await self.http.put(url, json=json, headers=self._h(headers))
 
     async def patch(self, url: str, json: Any = None, headers: dict[str, str] | None = None) -> httpx.Response:
         return await self.http.patch(url, json=json, headers=self._h(headers))

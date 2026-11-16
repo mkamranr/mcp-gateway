@@ -6,6 +6,7 @@ import { api } from '../../services/api'
 import { cn, timeAgo } from '../../services/format'
 import type { HealthComponent } from '../../services/types'
 import { Badge, Callout, Field, JsonView, PageHeading, Panel, QueryState, Status, useToast } from '../../components/ui'
+import { SsoSettings } from './SsoSettings'
 
 interface SettingsResp {
   system: {
@@ -19,22 +20,24 @@ interface SettingsResp {
   stored: Record<string, any>; tenant: Record<string, any>; health: HealthComponent[]; editable: boolean
 }
 
-type Section = 'general' | 'security' | 'limits' | 'network' | 'account' | 'health'
+type Section = 'general' | 'security' | 'sso' | 'limits' | 'network' | 'account' | 'health'
 const SECTIONS: { value: Section; label: string }[] = [
-  { value: 'general', label: 'General & MCP endpoint' }, { value: 'security', label: 'Security' }, { value: 'limits', label: 'Payload & global limits' },
+  { value: 'general', label: 'General & MCP endpoint' }, { value: 'security', label: 'Security' }, { value: 'sso', label: 'Single sign-on' }, { value: 'limits', label: 'Payload & global limits' },
   { value: 'network', label: 'Network allowlists' }, { value: 'account', label: 'My account' }, { value: 'health', label: 'System health' },
 ]
 
 export function SettingsPage() {
   const [section, setSection] = useState<Section>('general')
+  const { me } = useAuth()
+  const sections = SECTIONS.filter(s => s.value !== 'sso' || me?.is_platform_admin)
   const q = useQuery({ queryKey: ['settings'], queryFn: () => api.get<SettingsResp>('/settings') })
   return (
     <>
       <PageHeading eyebrow="ADMINISTRATION" title="Settings" subtitle="Platform configuration. Values set from environment variables are read-only here." />
       <div className="settings-layout">
-        <div className="settings-tabs">{SECTIONS.map(s => <button key={s.value} className={cn(section === s.value && 'selected')} onClick={() => setSection(s.value)}>{s.label}</button>)}</div>
+        <div className="settings-tabs">{sections.map(s => <button key={s.value} className={cn(section === s.value && 'selected')} onClick={() => setSection(s.value)}>{s.label}</button>)}</div>
         <div className="settings-form" style={{ maxWidth: 820 }}>
-          {section === 'account' ? <Account /> : <QueryState q={q}>{d => <SettingsSection section={section} d={d} />}</QueryState>}
+          {section === 'account' ? <Account /> : section === 'sso' ? <SsoSettings /> : <QueryState q={q}>{d => <SettingsSection section={section} d={d} />}</QueryState>}
         </div>
       </div>
     </>
@@ -118,12 +121,16 @@ function Account() {
     onSuccess: () => { toast.ok('Password changed. Please sign in again.'); setTimeout(() => logout(), 1200) },
     onError: e => toast.error(e),
   })
+  const sso = me?.auth_source === 'oidc'
   return <Panel title="My account">
-    <dl className="kv"><dt>Name</dt><dd>{me?.display_name}</dd><dt>Roles</dt><dd>{me?.is_platform_admin ? 'Platform Admin' : me?.roles.join(', ')}</dd></dl>
+    <dl className="kv"><dt>Name</dt><dd>{me?.display_name}</dd><dt>Roles</dt><dd>{me?.is_platform_admin ? 'Platform Admin' : me?.roles.join(', ')}</dd>
+      <dt>Sign-in</dt><dd>{sso ? <Badge color="blue">single sign-on</Badge> : <Badge>local password</Badge>}</dd></dl>
+    {sso ? <Callout>Your account is managed by your organisation's identity provider. Change your password and group memberships there; roles here follow your IdP groups at each sign-in.</Callout> : <>
     <div className="section-title">Change password</div>
     <Field label="Current password"><input type="password" autoComplete="current-password" value={cur} onChange={e => setCur(e.target.value)} /></Field>
     <Field label="New password" hint="At least 12 characters." error={next && next.length < 12 ? 'Too short' : null}><input type="password" autoComplete="new-password" value={next} onChange={e => setNext(e.target.value)} /></Field>
     <Field label="Confirm new password" error={confirm && confirm !== next ? 'Passwords do not match' : null}><input type="password" autoComplete="new-password" value={confirm} onChange={e => setConfirm(e.target.value)} /></Field>
     <div className="form-actions"><button className="btn primary" disabled={!cur || next.length < 12 || next !== confirm || m.isPending} onClick={() => m.mutate()}>Change password</button></div>
+    </>}
   </Panel>
 }

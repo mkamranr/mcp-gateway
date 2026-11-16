@@ -30,9 +30,9 @@ function Users({ canManage }: { canManage: boolean }) {
       {d => <div className="table-wrap"><table>
         <thead><tr><th>USER</th><th>ROLES</th><th>MEMBERSHIP</th><th>ACCOUNT</th><th>LAST LOGIN</th><th>ADDED</th><th /></tr></thead>
         <tbody>{d.items.map(u => <tr key={u.membership_id}>
-          <td><b>{u.display_name || u.username}</b><div className="muted mono" style={{ fontSize: 9, marginTop: 3 }}>{u.username}{u.email ? ` · ${u.email}` : ''}</div></td>
+          <td><b>{u.display_name || u.username}</b><div className="muted mono" style={{ fontSize: 9, marginTop: 3 }}>{u.username}{u.email ? ` · ${u.email}` : ''}</div>{u.auth_source === 'oidc' && <div style={{ marginTop: 4 }}><Badge color="blue">SSO</Badge></div>}</td>
           <td><div className="chips">{u.roles.map(r => <span className="chip" key={r}>{ROLE_LABELS[r] || r}</span>)}</div></td>
-          <td><Status value={u.status} /></td><td><Status value={u.user_status} /></td>
+          <td><Status value={u.status} />{u.managed_by === 'oidc' && <div className="muted" style={{ fontSize: 9, marginTop: 3 }} title="Roles follow IdP groups and are re-applied at every SSO sign-in">managed by SSO</div>}</td><td><Status value={u.user_status} /></td>
           <td className="muted">{timeAgo(u.last_login_at)}</td><td className="muted">{dateTime(u.created_at)}</td>
           <td>{canManage && u.user_id !== me?.principal_id && <button className="small-btn" onClick={() => setEditing(u)}><Pencil size={11} />Edit</button>}</td>
         </tr>)}</tbody>
@@ -107,6 +107,7 @@ function EditUser({ tenantId, user, onClose }: { tenantId: string; user: TenantU
     <button className="btn secondary" onClick={onClose}>Cancel</button>
     <button className="btn primary" disabled={!roles.length || m.isPending} onClick={() => m.mutate()}>Save</button>
   </>}>
+    {user.managed_by === 'oidc' && <Callout kind="warn">This membership is managed by SSO. Changes here are overwritten at the user's next SSO sign-in; change the IdP group or the group rules instead.</Callout>}
     <RolePicker value={roles} onChange={setRoles} />
     <div className="toggle-row"><span>Membership active</span><Switch on={active} onChange={setActive} label="Active" /></div>
     {!active && <Callout kind="warn">The user loses access to this tenant immediately.</Callout>}

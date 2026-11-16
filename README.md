@@ -20,6 +20,9 @@ actions, and records an append-only audit trail. Built for on-premises and air-g
 - **Identity and tenancy.** Tenants, users (Argon2id, server-side sessions, CSRF), six roles, and agents with
   hashed API keys (`mgw_live_…`). A key is shown once and can be rotated, revoked or emergency-revoked.
   Tenant isolation is enforced in every repository.
+- **Single sign-on (OIDC).** One platform-wide IdP (Keycloak, Entra ID, AD FS and others). Authorization code
+  flow with PKCE. Accounts are created just-in-time. IdP groups map to tenant roles and are re-synced at every
+  sign-in. Local password sign-in can be limited to break-glass administrators. See [docs/sso.md](docs/sso.md).
 - **Default-deny policy engine.** Allow/deny policies over principals, servers, tools, risk levels and actions.
   Conditions cover environment, time window, source CIDR and rate. Deny overrides allow. Wildcard grants need
   explicit confirmation. Includes a simulator and version history.
@@ -59,6 +62,10 @@ make dev-ui             # in another terminal: http://localhost:5173
    MGW_URL=http://127.0.0.1:8080/mcp MGW_AGENT_KEY=mgw_live_... \
      uv run --project backend python deploy/examples/demo_agent.py
    ```
+
+To try single sign-on, start the stack with the mock IdP instead:
+`cd backend && uv run python -m devtools.dev_stack --with-oidc` (then `make dev-ui`). The login page shows
+**Sign in with Mock IdP**, with demo users `alice`, `bob`, `carol` and `root`.
 6. Approve the pending request as a *different* user with the Approver role, then watch it complete in
    **Audit Logs**.
 
@@ -106,5 +113,5 @@ weekly updates for uv, npm, Actions and base images.
 [Architecture](docs/architecture.md) · [Security model](docs/security-model.md) ·
 [Threat model](docs/threat-model.md) · [API reference](docs/api-reference.md) ·
 [MCP client configuration](docs/mcp-client-configuration.md) · [Deployment](docs/deployment.md) ·
-[Air-gapped installation](docs/air-gapped-installation.md) · [Operations & runbooks](docs/operations.md) ·
+[Air-gapped installation](docs/air-gapped-installation.md) · [Single sign-on](docs/sso.md) · [Operations & runbooks](docs/operations.md) ·
 [Security policy](SECURITY.md) · [Contributing](CONTRIBUTING.md)

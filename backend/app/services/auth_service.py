@@ -69,9 +69,33 @@ class AuthService:
             )
             raise GatewayError(ErrorCode.INVALID_CREDENTIAL, "Invalid username or password.")
         assert user is not None
+        await self._check_local_login_allowed(user, source_ip)
         if password_needs_rehash(user["password_hash"]):
             await self.repos.users.update(user["_id"], {"password_hash": hash_password(password)})
+        return await self.create_session(user, source_ip, tenant_id, method="password")
 
+    async def _check_local_login_allowed(self, user: dict[str, Any], source_ip: str) -> None:
+        """When SSO restricts local login, only the named break-glass accounts may use a password."""
+        cfg = await self.repos.settings.get_value("oidc") or {}
+        if not cfg.get("enabled") or cfg.get("local_login") != "break_glass_only":
+            return
+        if user["username"] in (cfg.get("break_glass_usernames") or []):
+            await self.audit.record(
+                SYSTEM_TENANT, "auth.break_glass.used", severity="high",
+                principal={"type": "user", "id": user["_id"], "name": user["username"]},
+                status="success", metadata={"source_ip": source_ip},
+            )
+            return
+        await self.audit.record(
+            SYSTEM_TENANT, "auth.login.failed",
+            principal={"type": "user", "id": user["_id"], "name": user["username"]},
+            status="failure", metadata={"source_ip": source_ip, "reason": "local_login_disabled"},
+        )
+        raise GatewayError(ErrorCode.ACCESS_DENIED, "Password sign-in is disabled. Use single sign-on.")
+
+    async def create_session(self, user: dict[str, Any], source_ip: str, tenant_id: str | None = None,
+                             *, method: str = "password") -> dict[str, Any]:
+        """Start a console session for an already authenticated user (password or SSO)."""
         tenants = await self._user_tenants(user)
         if not tenants:
             raise GatewayError(ErrorCode.ACCESS_DENIED, "This account has no active tenant membership.")
@@ -81,7 +105,7 @@ class AuthService:
         csrf = random_token(24)
         now = utcnow()
         session = {
-            "user_id": user["_id"], "tenant_id": active, "csrf": csrf,
+            "user_id": user["_id"], "tenant_id": active, "csrf": csrf, "auth_method": method,
             "created_at": now.isoformat(),
             "absolute_expiry": (now + timedelta(minutes=self.settings.session_ttl_minutes)).isoformat(),
             "source_ip": source_ip,
@@ -94,7 +118,7 @@ class AuthService:
         await self.repos.users.update(user["_id"], {"last_login_at": now, "last_tenant_id": active})
         await self.audit.record(
             active, "auth.login.succeeded", principal={"type": "user", "id": user["_id"], "name": user["username"]},
-            status="success", metadata={"source_ip": source_ip},
+            status="success", metadata={"source_ip": source_ip, "method": method},
         )
         return {"session_id": sid, "csrf": csrf, "tenant_id": active}
 
@@ -186,6 +210,8 @@ class AuthService:
 
     async def change_password(self, principal: Principal, current: str, new: str) -> None:
         user = await self.repos.users.get(principal.principal_id)
+        if user and user.get("auth_source") == "oidc":
+            raise GatewayError(ErrorCode.CONFLICT, "This account signs in through single sign-on and has no password.")
         if not user or not verify_password(current, user.get("password_hash")):
             raise GatewayError(ErrorCode.INVALID_CREDENTIAL, "Current password is incorrect.")
         await self.repos.users.update(user["_id"], {"password_hash": hash_password(new), "must_change_password": False})

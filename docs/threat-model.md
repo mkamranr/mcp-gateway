@@ -36,10 +36,11 @@ decisions · tool arguments and results (may contain personal data) · the audit
 | T14 | Encryption key or pepper compromise | Supplied as files or env, never stored in the DB. Rotation tool for the encryption key. Pepper rotation is documented (it invalidates keys). | Anyone holding both a DB dump and the key can decrypt upstream secrets. |
 | T15 | Quota or concurrency exhaustion (DoS) by an agent | Atomic quotas at several scopes, concurrency slots, per-server capacity limiter, request body limit, timeouts. Approval requests consume quota. | Infrastructure-level DoS is out of scope. |
 | T16 | Redis or MongoDB unavailable | Hard quotas fail closed. Execution fails closed without audit. Readiness probe reports the dependency. Worker heartbeat. | Availability is reduced during an outage. This is deliberate. |
+| T18 | Forged or replayed SSO sign-in (token substitution, login CSRF, open redirect, account takeover by username) | PKCE S256. State is single use, stored hashed, expires in 10 min, and is bound to the browser by an HttpOnly cookie. Nonce. Signature verified against JWKS with asymmetric algorithms only (no `none`/`HS*`). Exact issuer, audience, `azp`, expiry. Users keyed on issuer + subject. Same-username local accounts are refused unless linking is explicitly enabled. `return_to` limited to same-origin paths. No redirects followed and TLS verified when calling the IdP. Each case covered by `tests/security/test_sso.py`. | A compromised IdP, or a compromised administrator of a mapped IdP group, grants access. Removal from a group takes effect at the next sign-in, not for sessions already open. |
 | T17 | Supply chain | Locked dependencies (`uv.lock`, `package-lock.json`), pinned images, SBOM generation, offline bundle with checksums and image-ID verification. | Pin base images by digest in your registry. Scan images. |
 
 ## Out of scope / not yet covered
 
-Penetration test, tested backup and restore drills, external IdP (OIDC/SAML), mTLS between internal
+Penetration test, tested backup and restore drills, SAML and SCIM provisioning, mTLS between internal
 services, HSM/KMS-backed keys, and multi-host high availability. These are documented as next steps in the
 operations guide.

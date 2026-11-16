@@ -17,6 +17,7 @@ from app.services.invocation_service import InvocationService
 from app.services.policy_service import PolicyService
 from app.services.quota_service import QuotaService
 from app.services.registry_service import RegistryService
+from app.services.sso_service import SsoService
 from app.services.usage_service import UsageService
 from app.services.validation_service import ValidationService
 
@@ -32,6 +33,7 @@ class Container:
         self.clients = ClientManager(settings, self.repos, self.encryptor)
         self.auth = AuthService(settings, self.repos, self.redis, self.audit)
         self.identity = IdentityService(settings, self.repos, self.audit, self.auth)
+        self.sso = SsoService(settings, self.repos, self.redis, self.encryptor, self.audit, self.auth)
         self.registry = RegistryService(settings, self.repos, self.encryptor, self.audit, self.clients)
         self.policy = PolicyService(self.repos, self.audit)
         self.validation = ValidationService(settings)

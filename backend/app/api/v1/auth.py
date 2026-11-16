@@ -67,6 +67,7 @@ async def login(body: LoginRequest, request: Request, response: Response,
     payload = _principal_payload(principal, c, await _tenants_for(c, principal))
     payload["csrf_token"] = result["csrf"]
     payload["must_change_password"] = bool((user or {}).get("must_change_password"))
+    payload["auth_source"] = (user or {}).get("auth_source", "local")
     return payload
 
 
@@ -97,6 +98,9 @@ async def me(request: Request, p: Principal = Depends(get_principal),
     payload = _principal_payload(p, c, await _tenants_for(c, p))
     if p.principal_type == "user":
         payload["csrf_token"] = request.cookies.get(CSRF_COOKIE)
+        user = await c.repos.users.get(p.principal_id) or {}
+        payload["auth_source"] = user.get("auth_source", "local")
+        payload["must_change_password"] = bool(user.get("must_change_password"))
     return payload
 
 

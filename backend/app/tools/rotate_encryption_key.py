@@ -5,6 +5,7 @@ Re-encrypts every AES-GCM ciphertext the gateway stores from the old key to the 
 * ``secrets.ciphertext``                upstream credentials      AD = "<tenant>:<secret id>"
 * ``approval_requests.arguments_encrypted`` approval arguments   AD = "<tenant>:<approval id>"
 * ``approval_requests.result_encrypted``    approved-call results AD = "<tenant>:<approval id>:result"
+* ``system_settings[oidc].value.client_secret_enc`` SSO client secret AD = "system:oidc:client_secret"
 
 Procedure (see docs/operations.md): stop gateway-api and worker, back up MongoDB and the old key, run this
 tool, switch DATA_ENCRYPTION_KEY to the new key, start the services. The tool is idempotent: values that
@@ -76,7 +77,36 @@ async def rotate(db: Any, old: Encryptor, new: Encryptor, *, dry_run: bool = Fal
                     report.failed.append(f"{collection}/{doc['_id']}.{fld} (changed during rotation)")
                     continue
             report.rotated += 1
+    await _rotate_oidc_secret(db, old, new, report, dry_run)
     return report
+
+
+async def _rotate_oidc_secret(db: Any, old: Encryptor, new: Encryptor, report: Report, dry_run: bool) -> None:
+    from app.services.sso_service import CONFIG_KEY, SECRET_AAD
+
+    fld = "value.client_secret_enc"
+    doc = await db["system_settings"].find_one({"key": CONFIG_KEY, fld: {"$nin": [None, ""]}})
+    if doc is None:
+        return
+    token = doc["value"]["client_secret_enc"]
+    try:
+        new.decrypt(token, SECRET_AAD)
+        report.already_new += 1
+        return
+    except Exception:  # noqa: BLE001,S110 - not yet rotated
+        pass
+    try:
+        plaintext = old.decrypt(token, SECRET_AAD)
+    except Exception:  # noqa: BLE001
+        report.failed.append(f"system_settings/{CONFIG_KEY}.client_secret_enc")
+        return
+    if not dry_run:
+        res = await db["system_settings"].update_one({"_id": doc["_id"], fld: token},
+                                                     {"$set": {fld: new.encrypt(plaintext, SECRET_AAD)}})
+        if res.modified_count != 1:
+            report.failed.append(f"system_settings/{CONFIG_KEY}.client_secret_enc (changed during rotation)")
+            return
+    report.rotated += 1
 
 
 async def _main(ns: argparse.Namespace) -> int:

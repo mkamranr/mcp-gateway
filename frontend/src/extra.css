@@ -98,3 +98,14 @@ pre.code{background:var(--bg);border:1px solid var(--border);border-radius:8px;p
 .field-row{align-items:start}
 .field{align-content:start}
 .switch:disabled{opacity:.45;cursor:not-allowed}
+/* SSO sign-in */
+.sso-btn{width:100%;text-decoration:none;margin-top:14px;padding:11px 12px}
+.login-divider{display:flex;align-items:center;gap:10px;margin:18px 0 4px;color:var(--muted,#8b9bb2);font-size:9px;text-transform:uppercase;letter-spacing:.8px}
+.login-divider:before,.login-divider:after{content:"";flex:1;border-top:1px solid #25364d}
+.break-glass{margin:16px auto 0;justify-content:center;width:100%;color:#8b9bb2}
+.rule-row{display:grid;grid-template-columns:1.2fr 1fr 1.6fr auto;gap:8px;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)}
+.rule-row>input,.rule-row>select{width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:7px;padding:8px;font-size:10px}
+.rule-row .chips{gap:4px 10px}
+.rule-row .check{display:inline-flex;align-items:center;gap:5px;font-size:10px;white-space:nowrap}
+.rule-row .check input{width:auto;margin:0}
+@media(max-width:720px){.rule-row{grid-template-columns:1fr}.rule-row>.small-btn{justify-self:end}}

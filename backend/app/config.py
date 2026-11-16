@@ -80,6 +80,11 @@ class Settings(BaseSettings):
     bootstrap_admin_password: str = Field(default="", repr=False)
     bootstrap_tenant_slug: str = "default"
 
+    # OIDC single sign-on (the IdP itself is configured in the console; these are deployment-level knobs).
+    oidc_ca_bundle_file: str | None = None  # PEM bundle for an IdP behind an internal CA; default = system CAs
+    oidc_http_timeout_seconds: float = 10.0
+    oidc_allow_insecure_http: bool = False  # http:// issuers; honoured only outside production
+
     worker_poll_interval_seconds: float = 2.0
     health_check_interval_seconds: float = 60.0
 
@@ -120,6 +125,10 @@ class Settings(BaseSettings):
         if len(raw) != 32:
             raise ValueError("DATA_ENCRYPTION_KEY must decode to exactly 32 bytes")
         return raw
+
+    @property
+    def oidc_redirect_uri(self) -> str:
+        return self.public_base_url.rstrip("/") + "/api/v1/auth/oidc/callback"
 
     @property
     def is_dev(self) -> bool:

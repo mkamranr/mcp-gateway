@@ -9,6 +9,13 @@
 
 User sessions cannot call `/mcp`, and agent keys cannot call administrative routes.
 
+**Single sign-on (optional).** Users can also sign in through one OpenID Connect IdP (authorization code
+flow with PKCE S256, single-use state bound to the browser by a cookie, nonce, ID-token signature with
+asymmetric algorithms only, exact issuer, audience/`azp`, expiry). Accounts are keyed on issuer + subject.
+IdP groups map to tenant memberships and roles, re-applied at every sign-in. SSO accounts have no
+password. Local password sign-in can be restricted to named break-glass platform administrators. The SSO
+client secret is write-only and stored AES-256-GCM encrypted. See [sso.md](sso.md).
+
 ## Roles
 
 | Role | Scope | Can |

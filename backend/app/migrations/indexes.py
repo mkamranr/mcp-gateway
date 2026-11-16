@@ -13,6 +13,9 @@ INDEXES: dict[str, list[IndexModel]] = {
     "users": [
         IndexModel([("username", A)], unique=True),
         IndexModel([("email", A)], unique=True, partialFilterExpression={"email": {"$type": "string"}}),
+        # One account per IdP identity (issuer + subject); never matched by username.
+        IndexModel([("oidc.issuer", A), ("oidc.subject", A)], unique=True,
+                   partialFilterExpression={"oidc.subject": {"$type": "string"}}),
     ],
     "tenant_memberships": [
         IndexModel([("tenant_id", A), ("user_id", A)], unique=True),
