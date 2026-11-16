@@ -1,125 +1,252 @@
-# MCP-Gateway
+<div align="center">
 
-A self-hosted, multi-tenant security gateway between AI agents and the MCP (Model Context Protocol)
-servers that expose your tools. Agents connect to **one** MCP endpoint. The gateway decides what each
-agent can see and call, validates every argument, enforces quotas, asks humans to approve sensitive
-actions, and records an append-only audit trail. Built for on-premises and air-gapped environments.
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/logo-wordmark-dark.svg">
+  <img alt="MCP-Gateway" src="docs/assets/logo-wordmark-light.svg" width="520">
+</picture>
 
+**A self-hosted security gateway between AI agents and the tools they use.**<br>
+One governed MCP endpoint with default-deny policy, human approval, quotas and a complete audit trail.<br>
+Built for on-premises and air-gapped environments.
+
+[![CI](https://github.com/mkamranr/mcp-gateway/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/mkamranr/mcp-gateway/actions/workflows/ci.yml)
+![Python](https://img.shields.io/badge/python-3.12-3776AB?logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white)
+![React](https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=black)
+![MCP](https://img.shields.io/badge/Model_Context_Protocol-streamable_HTTP-1546b0)
+![Docker Compose](https://img.shields.io/badge/Docker_Compose-air--gap_ready-2496ED?logo=docker&logoColor=white)
+
+[Features](#features) · [How it works](#how-it-works) · [Quick start](#quick-start) · [Deployment](#production-deployment) · [Documentation](#documentation)
+
+<br>
+
+<img src="docs/assets/screenshots/overview.png" alt="MCP-Gateway admin console: overview dashboard" width="100%">
+
+</div>
+
+## Why MCP-Gateway
+
+The Model Context Protocol makes it easy to give AI agents tools: HR systems, ticketing, databases, email. It does
+not decide **which** agent may call **which** tool, with **what** arguments, how often, or who signs off on the
+risky ones. Connecting agents straight to MCP servers leaves that to every server and every agent.
+
+MCP-Gateway puts one enforcement point in between. Agents connect to a single MCP endpoint with their own
+credential. They see only the tools they are allowed to use. Every call is authorized against policy, validated
+against the tool's schema, counted against quotas, sent for human approval when required, and recorded in an
+append-only audit log, before anything reaches the upstream server.
+
+## Features
+
+<table>
+<tr>
+<td width="50%" valign="top">
+
+### 🛡️ Access control
+- **Default-deny policy engine.** Allow and deny rules over agents, users, roles, servers, tools, risk levels
+  and actions. Conditions on environment, time window, source network and rate. Deny always wins.
+- **Policy simulator and history.** Test a request without executing it; every version is kept.
+- **Policy as code.** YAML bundles in git, with a field-level `plan` and an all-or-nothing `apply` that makes
+  exactly the reviewed changes.
+- **Tool review.** New tools stay disabled until reviewed. A changed schema blocks calls until acknowledged.
+
+</td>
+<td width="50%" valign="top">
+
+### ✅ Human in the loop
+- **Approvals** for sensitive or critical tools: 1 or 2 approvers, separation of duties, expiry, and typed
+  confirmation for critical actions.
+- **Tamper-proof requests.** Arguments are bound by SHA-256 hash and AES-GCM encryption; the worker re-checks
+  credential, policy and tool state before running the call **exactly once**.
+
+### 📊 Limits and output controls
+- Atomic quotas and concurrency limits per tenant, agent, tool and upstream server.
+- Output size caps, schema validation and field redaction. Tool output is marked untrusted.
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+### 🔐 Identity and tenancy
+- Multi-tenant, with tenant isolation enforced in every data access path.
+- Agents authenticate with hashed, rotatable, revocable API keys (`mgw_live_…`).
+- Console users: Argon2id passwords, server-side sessions, CSRF protection, six roles.
+- **Single sign-on (OIDC)** with Keycloak, Entra ID, AD FS and others; IdP groups map to roles.
+
+</td>
+<td valign="top">
+
+### 🔎 Audit and operations
+- Append-only, correlated audit trail with search and audited export.
+- **SIEM forwarding** to syslog (TLS/TCP/UDP) or HTTP collectors such as Splunk HEC, as JSON or CEF.
+- Prometheus metrics, usage dashboards, upstream health checks.
+- **High availability.** Stateless API and workers; MongoDB replica sets and Redis Sentinel.
+- Tested backup and restore scripts.
+
+</td>
+</tr>
+</table>
+
+## How it works
+
+```mermaid
+flowchart LR
+    A1[AI agent] -- "MCP + agent key" --> GW
+    A2[AI agent] -- "MCP + agent key" --> GW
+    U[Administrators] -- "Admin console" --> GW
+    subgraph GW [MCP-Gateway]
+        direction TB
+        P1[Authenticate] --> P2[Tool state] --> P3[Policy] --> P4[Schema validation]
+        P4 --> P5[Approval] --> P6[Quotas] --> P7[Dispatch] --> P8[Output controls + audit]
+    end
+    GW -- "streamable HTTP / stdio" --> S1[HR MCP server]
+    GW --> S2[Ticketing MCP server]
+    GW --> S3[Database MCP server]
+    GW -.- DB[(MongoDB<br>state + audit)]
+    GW -.- R[(Redis<br>sessions, quotas, jobs)]
+    GW -. "syslog / HTTPS" .-> SIEM[SIEM]
 ```
- AI agent ──MCP (Bearer agent key)──►  MCP-Gateway  ──►  upstream MCP servers (HTTP / stdio)
-                                         │  identity · default-deny policy · schema validation
- Admin console (React) ──REST/cookie──►  │  quotas · human approval · output controls · audit
-                                         └─ MongoDB (state, audit) · Redis (sessions, quotas, jobs)
-```
 
-## Features (MVP)
+The MCP endpoint, the REST API and the approval worker all run the **same** pipeline, so there is no side door.
+If a dependency needed for a safe decision (policy store, quota store, audit log) is unavailable, the gateway
+**fails closed**.
 
-- **Registry.** Register upstream MCP servers over streamable HTTP or allowlisted stdio, test connections and
-  discover tools. Schemas are fingerprinted and versioned. **New tools are disabled until reviewed.** A schema
-  change blocks calls until an administrator acknowledges it.
-- **Identity and tenancy.** Tenants, users (Argon2id, server-side sessions, CSRF), six roles, and agents with
-  hashed API keys (`mgw_live_…`). A key is shown once and can be rotated, revoked or emergency-revoked.
-  Tenant isolation is enforced in every repository.
-- **Single sign-on (OIDC).** One platform-wide IdP (Keycloak, Entra ID, AD FS and others). Authorization code
-  flow with PKCE. Accounts are created just-in-time. IdP groups map to tenant roles and are re-synced at every
-  sign-in. Local password sign-in can be limited to break-glass administrators. See [docs/sso.md](docs/sso.md).
-- **SIEM forwarding.** Audit events streamed to syslog (TLS, TCP, UDP) or an HTTP collector (Splunk HEC and
-  others) as JSON or CEF. Delivery is at least once, in order, with no loss during collector outages. See
-  [docs/siem.md](docs/siem.md).
-- **Default-deny policy engine.** Allow/deny policies over principals, servers, tools, risk levels and actions.
-  Conditions cover environment, time window, source CIDR and rate. Deny overrides allow. Wildcard grants need
-  explicit confirmation. Includes a simulator and version history.
-- **Policy as code.** Keep policies as YAML bundles in git: validate, plan (field-level diff) and apply from CI
-  with a dependency-free CLI, or in the console. Apply makes exactly the reviewed plan, all or nothing, and only
-  touches policies the bundle owns. See [docs/policy-as-code.md](docs/policy-as-code.md).
-- **One enforcement pipeline.** The MCP endpoint, the REST invoke API and the approval worker all go through
-  the same steps: authenticate → tool state → policy → JSON-Schema validation → approval → quotas → dispatch →
-  output controls → audit.
-- **Human approval.** Arguments are bound to the request by SHA-256 hash and AES-GCM encryption. Requires 1 or
-  2 approvers with separation of duties, and typed confirmation for critical tools. Requests expire. Before
-  executing, the worker revalidates the credential, tenant, server, tool, policy and argument hash, then runs
-  the call exactly once.
-- **Quotas.** Atomic Redis sliding windows and daily/monthly counters at global, tenant, tool and policy scope,
-  plus per-agent concurrency. Hard limits fail closed if Redis is down.
-- **Output controls.** Size caps, optional output-schema validation, field redaction. Tool output is marked as
-  untrusted.
-- **Audit and observability.** Append-only, correlated events (request, invocation and approval IDs). Search,
-  CSV/JSON export (the export is itself audited), usage dashboards, Prometheus `/api/v1/metrics`.
-- **Admin console.** React 18 + Vite, styled after the mockup. Every asset is bundled, with no CDN.
+## Screenshots
 
-## Quick start (local development, no Docker)
+<table>
+<tr>
+<td width="50%"><img src="docs/assets/screenshots/policies.png" alt="Policies"><p align="center"><sub><b>Policies</b>: default deny, conditions, broad-grant warnings and policy as code</sub></p></td>
+<td width="50%"><img src="docs/assets/screenshots/approvals.png" alt="Approvals"><p align="center"><sub><b>Approvals</b>: human sign-off for sensitive tools</sub></p></td>
+</tr>
+<tr>
+<td><img src="docs/assets/screenshots/tools.png" alt="Tool catalog"><p align="center"><sub><b>Tool catalog</b>: review status, risk levels, schema versions</sub></p></td>
+<td><img src="docs/assets/screenshots/audit.png" alt="Audit log"><p align="center"><sub><b>Audit log</b>: every decision, correlated and exportable</sub></p></td>
+</tr>
+</table>
 
-Requirements: [uv](https://docs.astral.sh/uv/) (Python 3.12) and Node.js 20+.
+## Quick start
+
+Run everything locally without Docker. Requirements: [uv](https://docs.astral.sh/uv/) (Python 3.12) and
+Node.js 20+.
 
 ```bash
-make install            # uv sync + npm ci
-make dev                # mongod (pymongo-inmemory) + fakeredis + mock MCP server + API :8080 + worker
-make dev-ui             # in another terminal: http://localhost:5173
+make install    # uv sync + npm ci
+make dev        # MongoDB (in-memory) + Redis (fake) + mock MCP server + API on :8080 + worker
+make dev-ui     # in a second terminal: console on http://localhost:5173
 ```
 
-`make dev` prints a generated admin password and the mock upstream URL. Then:
+`make dev` prints a generated admin password and the URL of a mock upstream MCP server. Then:
 
-1. Sign in, open **MCP Servers → Add server**, enter the printed mock URL and enable *Allow private network*.
-2. **Refresh tools**. Open a tool, assign a risk level and enable it.
-3. **Agents & Credentials**: register an agent and create a key (shown once).
-4. **Policies**: allow that agent to use the tool. Add a policy with *Require approval* for a sensitive tool.
+1. Sign in and open **MCP Servers → Add server**. Enter the mock URL and enable *Allow private network*.
+2. Click **Refresh tools**, open a tool, assign a risk level and enable it.
+3. Under **Agents & Credentials**, register an agent and create a key (it is shown once).
+4. Under **Policies**, allow the agent to use the tool. Add a policy with *Require approval* for a sensitive tool.
 5. Run the demo agent:
    ```bash
    MGW_URL=http://127.0.0.1:8080/mcp MGW_AGENT_KEY=mgw_live_... \
      uv run --project backend python deploy/examples/demo_agent.py
    ```
-
-To try single sign-on, start the stack with the mock IdP instead:
-`cd backend && uv run python -m devtools.dev_stack --with-oidc` (then `make dev-ui`). The login page shows
-**Sign in with Mock IdP**, with demo users `alice`, `bob`, `carol` and `root`.
 6. Approve the pending request as a *different* user with the Approver role, then watch it complete in
    **Audit Logs**.
 
+To try single sign-on, start the stack with a built-in mock identity provider:
+`cd backend && uv run python -m devtools.dev_stack --with-oidc`, then `make dev-ui`. Demo users are `alice`,
+`bob`, `carol` and `root`.
+
+## Connecting an agent
+
+Any MCP client that supports streamable HTTP works:
+
+```json
+{
+  "mcpServers": {
+    "mcp-gateway": {
+      "type": "streamable-http",
+      "url": "https://mcp-gateway.example.internal/mcp",
+      "headers": { "Authorization": "Bearer ${MGW_AGENT_KEY}" }
+    }
+  }
+}
+```
+
+Tools appear as `<server>__<tool>`, for example `hr__get_attendance_summary`. See
+[MCP client configuration](docs/mcp-client-configuration.md) for Python and other clients.
+
 ## Production deployment
 
-Docker Compose, air-gap ready. Single host by default; several API replicas and workers with
-`docker-compose.ha.yml`, and multi-host with a MongoDB replica set and Redis Sentinel
-([docs/high-availability.md](docs/high-availability.md)). See [docs/deployment.md](docs/deployment.md) and
-[docs/air-gapped-installation.md](docs/air-gapped-installation.md).
+Docker Compose, with every image pinned and loadable from an offline bundle.
 
 ```bash
-./deploy/scripts/generate-secrets.sh && cp .env.example .env && docker compose up -d
+./deploy/scripts/generate-secrets.sh     # once: writes ./secrets/
+cp .env.example .env                     # adjust non-secret settings
+docker compose up -d --wait
 ```
+
+| Topology | How |
+|---|---|
+| **Single host** | `docker-compose.yml`. Only the web UI publishes a port; MongoDB and Redis stay on an internal network. |
+| **Several replicas** | add `-f docker-compose.ha.yml`: 2 API replicas and 2 workers, scalable with `--scale`. |
+| **Multi-host HA** | MongoDB replica set and Redis Sentinel behind a load balancer. See [high availability](docs/high-availability.md). |
+| **Air-gapped** | build an image bundle with checksums on a connected machine and load it offline. See [air-gapped installation](docs/air-gapped-installation.md). |
+
+Backups: `deploy/scripts/backup.sh` and `restore.sh`. A restore verifies that every stored secret decrypts before
+it starts serving traffic. See [operations](docs/operations.md).
+
+## Technology
+
+| Layer | Stack |
+|---|---|
+| Gateway API and worker | Python 3.12, FastAPI, official MCP SDK, Pydantic, PyMongo (async), redis-py |
+| Data | MongoDB 7 (state and audit), Redis 7 (sessions, quotas, job queue, leases) |
+| Admin console | React 18, TypeScript, Vite, TanStack Query. All assets bundled, no CDN |
+| Delivery | Docker Compose, nginx (unprivileged), read-only containers with all capabilities dropped |
 
 ## Repository layout
 
 | Path | Contents |
 |---|---|
-| `backend/app` | FastAPI app: `api/v1` (thin routes), `services` (business logic), `repositories` (tenant-scoped Mongo access), `mcp` (gateway endpoint, adapters, SSRF guard), `workers`, `tools` |
+| `backend/app` | FastAPI app: `api/v1` routes, `services` (business logic), `repositories` (tenant-scoped data access), `mcp` (gateway endpoint, upstream adapters, SSRF guard), `workers`, `tools` (key rotation, data verification) |
 | `backend/tests` | unit, integration, contract (real MCP SDK client) and security suites |
-| `backend/devtools` | mock MCP server, no-Docker dev stack |
-| `frontend/src` | `app` (shell, auth, routes), `features/*` (one folder per page), `components`, `services` (typed API client) |
-| `deploy` | secret generation, offline bundle scripts, SBOM script, demo agent |
-| `docs` | architecture, security and threat model, API, client configuration, deployment, operations |
+| `backend/devtools` | mock MCP server, mock OIDC provider, Docker-free dev stack |
+| `frontend/src` | admin console: `app` (shell, auth, routing), `features/*` (one folder per page), `components`, `services` |
+| `deploy` | secret generation, backup and restore, offline bundle, SBOM, policy-as-code CLI, demo agent |
+| `docs` | architecture, security and threat model, API, deployment, operations and feature guides |
 
-## Quality gates
+## Quality
 
 ```bash
-make check     # ruff + mypy + tsc + pytest (unit, integration, contract, security) + production build
+make check    # ruff + mypy + tsc + full pytest suite + production build
 ```
 
-GitHub Actions (`.github/workflows/ci.yml`) runs on every push and pull request to `main`:
+Every push and pull request runs in GitHub Actions:
 
-| Job | What it checks |
+| Job | What it verifies |
 |---|---|
-| Backend | ruff, mypy, full pytest suite against real MongoDB 7 and Redis 7 service containers |
-| Frontend | typecheck, production build, and `check:offline`, which fails if the bundle references any external origin |
-| Dependency scan | `pip-audit` on the locked production dependencies, `npm audit --omit=dev` (high and above) |
-| Compose smoke test | builds the images, **blocks all container egress to public addresses**, starts the full stack with `--pull never`, then checks health, published ports, MongoDB auth, sign-in, CSRF, logout and security headers through the web-ui proxy. Then a **backup and restore drill**: seed data, back up with `backup.sh`, wipe every volume, restore with `restore.sh`, and verify data, keys and secrets. It also checks that a damaged archive and a wrong encryption key are refused. |
+| **Backend** | lint (ruff), type checking (mypy), and the full test suite against real MongoDB 7 and Redis 7 |
+| **Frontend** | typecheck, production build, and a check that the bundle references no external origin |
+| **Dependency scan** | `pip-audit` and `npm audit` on production dependencies |
+| **Compose smoke test** | starts the full stack with **all internet egress blocked**, checks health, ports, auth, CSRF and security headers, runs the policy-as-code CLI, and performs a **backup → wipe → restore** drill, including refusing a damaged archive and a wrong encryption key |
+| **Multi-replica** | two API replicas and two workers: concurrent first boot, a replica stopped under load with no failed requests, scale-out picked up without a proxy reload, worker failover |
 
-`release-bundle.yml` (run manually) builds the air-gap bundle, deletes every image, then verifies,
-loads and starts the bundle with egress blocked, as an air-gapped host would. Dependabot proposes
-weekly updates for uv, npm, Actions and base images.
+A manual release workflow builds the air-gap bundle, deletes every image, then loads and starts the bundle with
+egress blocked, as an air-gapped host would.
 
 ## Documentation
 
-[Architecture](docs/architecture.md) · [Security model](docs/security-model.md) ·
-[Threat model](docs/threat-model.md) · [API reference](docs/api-reference.md) ·
-[MCP client configuration](docs/mcp-client-configuration.md) · [Deployment](docs/deployment.md) ·
-[Air-gapped installation](docs/air-gapped-installation.md) · [Single sign-on](docs/sso.md) · [SIEM forwarding](docs/siem.md) · [Policy as code](docs/policy-as-code.md) · [High availability](docs/high-availability.md) · [Operations & runbooks](docs/operations.md) ·
-[Security policy](SECURITY.md) · [Contributing](CONTRIBUTING.md)
+| Topic | Guide |
+|---|---|
+| Design | [Architecture](docs/architecture.md) · [Security model](docs/security-model.md) · [Threat model](docs/threat-model.md) |
+| Integration | [API reference](docs/api-reference.md) · [MCP client configuration](docs/mcp-client-configuration.md) |
+| Deployment | [Deployment](docs/deployment.md) · [Air-gapped installation](docs/air-gapped-installation.md) · [High availability](docs/high-availability.md) |
+| Features | [Single sign-on](docs/sso.md) · [SIEM forwarding](docs/siem.md) · [Policy as code](docs/policy-as-code.md) |
+| Running it | [Operations and runbooks](docs/operations.md) |
+
+## Security
+
+Please report vulnerabilities privately as described in the [security policy](SECURITY.md). Do not open public
+issues for security problems.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the development setup, coding conventions and the checks a change
+must pass.
