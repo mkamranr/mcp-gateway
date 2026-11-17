@@ -152,6 +152,8 @@ jobs:
           fi
       - name: Smoke test through the web-ui proxy
         run: python3 .github/scripts/compose_smoke.py http://127.0.0.1:8088 secrets/bootstrap_admin_password
+      - name: SCIM 2.0 provisioning through the web-ui proxy
+        run: python3 .github/scripts/scim_check.py http://127.0.0.1:8088 secrets/bootstrap_admin_password
       - name: Policy-as-code CLI against the stack
         env:
           MGW_URL: http://127.0.0.1:8088

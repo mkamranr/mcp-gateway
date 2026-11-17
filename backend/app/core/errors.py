@@ -122,6 +122,25 @@ class GatewayError(Exception):
         super().__init__(f"{code}: {self.message}")
 
 
+SCIM_PREFIX = "/api/v1/scim/v2/"
+SCIM_ERROR_SCHEMA = "urn:ietf:params:scim:api:messages:2.0:Error"
+
+
+class ScimError(Exception):
+    """An error in SCIM's own format (RFC 7644 section 3.12), for requests under ``SCIM_PREFIX``."""
+
+    def __init__(self, status: int, detail: str, scim_type: str | None = None,
+                 headers: dict[str, str] | None = None) -> None:
+        super().__init__(detail)
+        self.status, self.detail, self.scim_type, self.headers = status, detail[:300], scim_type, headers or {}
+
+    def body(self) -> dict[str, Any]:
+        out: dict[str, Any] = {"schemas": [SCIM_ERROR_SCHEMA], "status": str(self.status), "detail": self.detail}
+        if self.scim_type:
+            out["scimType"] = self.scim_type
+        return out
+
+
 def not_found(what: str = "Resource") -> GatewayError:
     return GatewayError(ErrorCode.NOT_FOUND, f"{what} not found.")
 

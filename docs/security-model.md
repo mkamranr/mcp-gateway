@@ -26,6 +26,12 @@ so a directory user can't take over a local account by sharing its username. Dir
 on the entry's unique ID. Group rules and break-glass work as with SSO. The service-account password is
 write-only and stored AES-256-GCM encrypted. See [ldap.md](ldap.md).
 
+**SCIM 2.0 provisioning (optional).** The IdP creates, updates, deactivates and deletes SSO accounts and pushes
+group memberships, which go through the SSO group rules and apply at once. It authenticates with one bearer token,
+shown once and stored as an HMAC. SCIM can only see and change accounts it created, so local, break-glass and
+directory accounts are out of its reach. Provisioned accounts are linked to their SSO identity by a configured
+claim equal to the SCIM `externalId`, never by username. See [scim.md](scim.md).
+
 ## Roles
 
 | Role | Scope | Can |

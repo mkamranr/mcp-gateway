@@ -26,6 +26,13 @@ class UserRepository(GlobalRepository):
         return await self.col.find_one({"username": username.strip().lower()})
 
 
+class ScimGroupRepository(GlobalRepository):
+    """Groups pushed by the identity provider over SCIM (docs/scim.md); members are user IDs."""
+
+    collection_name = "scim_groups"
+    id_prefix = "grp"
+
+
 class SystemSettingsRepository(GlobalRepository):
     collection_name = "system_settings"
 
@@ -233,6 +240,7 @@ class Repos:
         self.tenants = TenantRepository(db)
         self.users = UserRepository(db)
         self.settings = SystemSettingsRepository(db)
+        self.scim_groups = ScimGroupRepository(db)
         self.memberships = MembershipRepository(db)
         self.agents = AgentRepository(db)
         self.credentials = CredentialRepository(db)

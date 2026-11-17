@@ -27,6 +27,7 @@ from app.services.audit_service import AuditService
 from app.services.auth_service import SYSTEM_TENANT, AuthService
 from app.services.group_sync import desired_memberships, sync_memberships
 from app.services.oidc_client import OidcClient, OidcError, pkce_pair
+from app.services.scim_service import ScimService
 
 log = get_logger(__name__)
 CONFIG_KEY = "oidc"
@@ -53,6 +54,7 @@ class SsoService:
         self.audit = audit
         self.auth = auth
         self.client = client or OidcClient(settings)
+        self.scim: ScimService | None = None  # set by the container
 
     # ------------------------------------------------------------------ configuration
     async def _stored(self) -> dict[str, Any]:
@@ -213,6 +215,25 @@ class SsoService:
         )
         return OidcError(code, reason)
 
+    async def _link_scim(self, claims: dict[str, Any], link_claim: str) -> dict[str, Any] | None:
+        """The SCIM-provisioned account whose externalId equals the configured claim, linked to this IdP identity.
+
+        Never by username. Only accounts that aren't linked yet; once linked, issuer + subject decide."""
+        value = claims.get(link_claim)
+        if not isinstance(value, str) or not value.strip():
+            return None
+        candidates = [u async for u in self.repos.users.col.find(
+            {"scim.externalId": value.strip(), "scim.deleted": {"$ne": True}, "oidc.subject": {"$exists": False}},
+        ).limit(2)]
+        if len(candidates) != 1:
+            return None  # none, or ambiguous: never guess
+        user = candidates[0]
+        await self.repos.users.update(user["_id"], {"oidc": {"issuer": claims["iss"], "subject": claims["sub"]}})
+        await self.audit.record(SYSTEM_TENANT, "user.oidc.linked", severity="high",
+                                principal={"type": "user", "id": user["_id"], "name": user["username"]},
+                                metadata={"issuer": claims["iss"], "source": "scim", "claim": link_claim})
+        return await self.repos.users.get(user["_id"])
+
     async def _provision(self, cfg: dict[str, Any], claims: dict[str, Any], source_ip: str) -> dict[str, Any]:
         issuer, subject = claims["iss"], claims["sub"]
         groups = self._groups(claims, cfg.get("groups_claim") or "groups")
@@ -226,6 +247,9 @@ class SsoService:
         name = claims.get(cfg.get("name_claim") or "name")
         name = name.strip()[:120] if isinstance(name, str) and name.strip() else None
 
+        scim_on, link_claim, scim_groups = await self.scim.link_claim() if self.scim else (False, "sub", False)
+        if user is None and scim_on:
+            user = await self._link_scim(claims, link_claim)
         if user is None:
             if not username:
                 raise await self._deny("username claim missing", claims, source_ip)
@@ -250,7 +274,9 @@ class SsoService:
                        "oidc": {"issuer": issuer, "subject": subject}}
                 try:
                     user = await self.repos.users.insert(doc)
-                except DuplicateKeyError:  # e.g. the email is already used by another account
+                except (DuplicateKeyError, GatewayError) as exc:  # e.g. the email is already used by another account
+                    if isinstance(exc, GatewayError) and exc.code != ErrorCode.CONFLICT or not doc["email"]:
+                        raise
                     user = await self.repos.users.insert({**doc, "email": None})
                 await self.audit.record(SYSTEM_TENANT, "user.oidc.provisioned",
                                         principal={"type": "user", "id": user["_id"], "name": username},
@@ -261,6 +287,11 @@ class SsoService:
 
         # Profile and platform-admin flag follow the IdP for SSO-only accounts (never demote a local admin).
         updates: dict[str, Any] = {"last_oidc_groups": sorted(groups)[:200]}
+        if user.get("scim") and scim_groups:
+            # Provisioned over SCIM with SCIM groups authoritative: profile, memberships and the platform-admin flag
+            # come from SCIM, not from this ID token.
+            await self.repos.users.update(user["_id"], updates)
+            return await self.repos.users.get(user["_id"]) or user
         if user.get("auth_source") == "oidc":
             if name:
                 updates["display_name"] = name

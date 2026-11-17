@@ -55,6 +55,10 @@ export interface TrustedIssuer {
   allowed_algorithms: string[]; required_scopes: string[]; max_token_lifetime_seconds: number; require_at_jwt_type: boolean; advertise: boolean
 }
 export interface AgentOAuthConfig { enabled: boolean; issuers: TrustedIssuer[]; resource: string; metadata_url: string; updated_at: string | null; updated_by: string | null }
+export interface ScimConfig {
+  enabled: boolean; link_claim: string; groups_authoritative: boolean; has_token: boolean; token_prefix: string | null
+  token_created_at: string | null; last_used_at: string | null; base_url: string; updated_at: string | null; token?: string
+}
 export interface AgentOAuthStatus { enabled: boolean; issuers: { issuer: string; display_name: string; subject_claim: string }[] }
 
 export interface CertInfo {
@@ -200,7 +204,7 @@ export interface AuditEvent {
 export interface TenantUser {
   membership_id: string; user_id: string; username: string; email: string | null; display_name: string
   roles: string[]; status: string; user_status: string; last_login_at: string | null; created_at: string
-  auth_source?: 'local' | 'oidc' | 'ldap'; managed_by?: 'manual' | 'oidc' | 'ldap'
+  auth_source?: 'local' | 'oidc' | 'ldap'; managed_by?: 'manual' | 'oidc' | 'ldap'; provisioned_by?: 'scim' | null
 }
 
 export interface Tenant { id: string; name: string; slug: string; status: string; settings: Record<string, any>; created_at: string }

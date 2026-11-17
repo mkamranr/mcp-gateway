@@ -19,6 +19,13 @@ INDEXES: dict[str, list[IndexModel]] = {
                    partialFilterExpression={"oidc.subject": {"$type": "string"}}),
         # One account per directory entry (its unique ID attribute, e.g. entryUUID or objectGUID).
         IndexModel([("ldap.id", A)], unique=True, partialFilterExpression={"ldap.id": {"$type": "string"}}),
+        # SCIM-provisioned accounts, looked up by the IdP's externalId (and linked at first SSO sign-in).
+        IndexModel([("scim.externalId", A)], partialFilterExpression={"scim.externalId": {"$type": "string"}}),
+    ],
+    "scim_groups": [
+        IndexModel([("displayName", A)], unique=True),
+        IndexModel([("externalId", A)], partialFilterExpression={"externalId": {"$type": "string"}}),
+        IndexModel([("members", A)]),
     ],
     "tenant_memberships": [
         IndexModel([("tenant_id", A), ("user_id", A)], unique=True),

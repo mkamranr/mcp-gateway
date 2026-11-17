@@ -20,6 +20,7 @@ from app.services.policy_bundle_service import PolicyBundleService
 from app.services.policy_service import PolicyService
 from app.services.quota_service import QuotaService
 from app.services.registry_service import RegistryService
+from app.services.scim_service import ScimService
 from app.services.siem_service import SiemService
 from app.services.sso_service import SsoService
 from app.services.usage_service import UsageService
@@ -42,6 +43,8 @@ class Container:
         self.auth.directory = self.ldap
         self.agent_oauth = AgentOAuthService(settings, self.repos, self.audit)
         self.auth.agent_oauth = self.agent_oauth
+        self.scim = ScimService(settings, self.repos, self.audit, self.auth)
+        self.sso.scim = self.scim
         self.siem = SiemService(settings, self.repos, self.redis, self.encryptor, self.audit)
         self.registry = RegistryService(settings, self.repos, self.encryptor, self.audit, self.clients)
         self.policy = PolicyService(self.repos, self.audit)

@@ -38,6 +38,11 @@ Roles: P = platform_admin, T = tenant_admin, S = security_admin, A = approver, U
 | GET | `/sso/config` | P | SSO configuration. Returns `has_client_secret` and `redirect_uri`, never the secret. |
 | PUT | `/sso/config` | P | Full configuration. `client_secret`: omit to keep, `""` to clear. Audited (`sso.config.updated`). |
 | POST | `/sso/test` | P | Discovery and JWKS check of the saved configuration |
+| GET | `/scim/config` | P | SCIM provisioning settings, `has_token` and `token_prefix` (never the token), `base_url` |
+| PUT | `/scim/config` | P | `{enabled, link_claim, groups_authoritative}`. Enabling needs a token. Audited (`scim.config.updated`). |
+| POST | `/scim/token` | P | New SCIM bearer token, returned once (`token`). The previous token stops working. |
+| DELETE | `/scim/token` | P | Revoke the token and turn provisioning off |
+| * | `/scim/v2/Users`, `/scim/v2/Groups`, `/scim/v2/ServiceProviderConfig`, `/scim/v2/ResourceTypes`, `/scim/v2/Schemas` | SCIM token | SCIM 2.0 (RFC 7644) for the identity provider; see [scim.md](scim.md). SCIM error format. |
 | GET | `/auth/agent-oauth/status` | user | Whether agents can use IdP tokens, and the trusted issuers (`issuer`, `display_name`, `subject_claim`) |
 | POST | `/auth/agent-oauth-clients` | S | `{agent_id, issuer, subject, name?, scopes?, expires_at?}`: OAuth credential for an agent ([agent-oauth.md](agent-oauth.md)). 409 if the issuer + client already belongs to an active credential. Not rotatable; revoke with `/auth/agent-keys/{id}/revoke`. |
 | GET | `/.well-known/oauth-protected-resource/mcp` | public | OAuth 2.0 Protected Resource Metadata for the MCP endpoint (RFC 9728): `resource`, `authorization_servers` (advertised issuers), `bearer_methods_supported`, `scopes_supported`. 404 unless agent OAuth is enabled with an advertised issuer. Also served at `/.well-known/oauth-protected-resource`. |

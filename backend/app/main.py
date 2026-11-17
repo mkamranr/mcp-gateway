@@ -19,6 +19,7 @@ from app.api.v1 import (
     observability,
     policies,
     registry,
+    scim,
     siem,
     sso,
 )
@@ -59,7 +60,7 @@ def create_app(settings: Settings | None = None, container: Container | None = N
     install_error_handlers(app)
 
     api = APIRouter(prefix="/api/v1")
-    for r in (auth.router, sso.router, ldap.router, agent_oauth.router, siem.router, identity.router, registry.router, policies.router, approvals.router,
+    for r in (auth.router, sso.router, ldap.router, agent_oauth.router, scim.router, siem.router, identity.router, registry.router, policies.router, approvals.router,
               observability.router):
         api.include_router(r)
     app.include_router(api)

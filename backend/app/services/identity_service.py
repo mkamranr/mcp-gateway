@@ -140,6 +140,7 @@ class IdentityService:
                 "status": m.get("status"), "user_status": u.get("status"), "last_login_at": u.get("last_login_at"),
                 "created_at": m.get("created_at"), "auth_source": u.get("auth_source", "local"),
                 "managed_by": m.get("managed_by", "manual"),
+                "provisioned_by": "scim" if u.get("scim") else None,
             })
         return {"items": items, "next_cursor": page["next_cursor"], "total": page["total"]}
 

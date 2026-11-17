@@ -30,9 +30,11 @@ function Users({ canManage }: { canManage: boolean }) {
       {d => <div className="table-wrap"><table>
         <thead><tr><th>USER</th><th>ROLES</th><th>MEMBERSHIP</th><th>ACCOUNT</th><th>LAST LOGIN</th><th>ADDED</th><th /></tr></thead>
         <tbody>{d.items.map(u => <tr key={u.membership_id}>
-          <td><b>{u.display_name || u.username}</b><div className="muted mono" style={{ fontSize: 9, marginTop: 3 }}>{u.username}{u.email ? ` · ${u.email}` : ''}</div>{u.auth_source === 'oidc' && <div style={{ marginTop: 4 }}><Badge color="blue">SSO</Badge></div>}{u.auth_source === 'ldap' && <div style={{ marginTop: 4 }}><Badge color="blue">Directory</Badge></div>}</td>
+          <td><b>{u.display_name || u.username}</b><div className="muted mono" style={{ fontSize: 9, marginTop: 3 }}>{u.username}{u.email ? ` · ${u.email}` : ''}</div>{u.auth_source === 'oidc' && <div style={{ marginTop: 4 }}><Badge color="blue">SSO</Badge>{u.provisioned_by === 'scim' && <> <Badge color="purple">SCIM</Badge></>}</div>}{u.auth_source === 'ldap' && <div style={{ marginTop: 4 }}><Badge color="blue">Directory</Badge></div>}</td>
           <td><div className="chips">{u.roles.map(r => <span className="chip" key={r}>{ROLE_LABELS[r] || r}</span>)}</div></td>
-          <td><Status value={u.status} />{u.managed_by === 'oidc' && <div className="muted" style={{ fontSize: 9, marginTop: 3 }} title="Roles follow IdP groups and are re-applied at every SSO sign-in">managed by SSO</div>}{u.managed_by === 'ldap' && <div className="muted" style={{ fontSize: 9, marginTop: 3 }} title="Roles follow directory groups and are re-applied at every directory sign-in">managed by directory</div>}</td><td><Status value={u.user_status} /></td>
+          <td><Status value={u.status} />{u.managed_by === 'oidc' && (u.provisioned_by === 'scim'
+            ? <div className="muted" style={{ fontSize: 9, marginTop: 3 }} title="Provisioned by the identity provider over SCIM: roles follow its groups and change as soon as the IdP pushes them">managed by SCIM</div>
+            : <div className="muted" style={{ fontSize: 9, marginTop: 3 }} title="Roles follow IdP groups and are re-applied at every SSO sign-in">managed by SSO</div>)}{u.managed_by === 'ldap' && <div className="muted" style={{ fontSize: 9, marginTop: 3 }} title="Roles follow directory groups and are re-applied at every directory sign-in">managed by directory</div>}</td><td><Status value={u.user_status} /></td>
           <td className="muted">{timeAgo(u.last_login_at)}</td><td className="muted">{dateTime(u.created_at)}</td>
           <td>{canManage && u.user_id !== me?.principal_id && <button className="small-btn" onClick={() => setEditing(u)}><Pencil size={11} />Edit</button>}</td>
         </tr>)}</tbody>

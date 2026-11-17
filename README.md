@@ -78,6 +78,8 @@ append-only audit log, before anything reaches the upstream server.
   Keycloak, Okta and others instead of gateway keys.
 - **LDAP / Active Directory sign-in** over LDAPS or StartTLS; directory groups (including nested AD groups) map
   to roles, with break-glass local administrators.
+- **SCIM 2.0 provisioning** from Entra ID, Okta and others: accounts and group memberships follow the IdP as
+  soon as they change there, and deactivating a user ends their sessions at once.
 - **Mutual TLS.** Agents can authenticate with client certificates from your PKI (SPIFFE IDs or pinned
   certificates), and the gateway presents client certificates to upstreams that require them.
 
@@ -234,7 +236,7 @@ Every push and pull request runs in GitHub Actions:
 | **Backend** | lint (ruff), type checking (mypy), and the full test suite against real MongoDB 7 and Redis 7 |
 | **Frontend** | typecheck, production build, and a check that the bundle references no external origin |
 | **Dependency scan** | `pip-audit` and `npm audit` on production dependencies |
-| **Compose smoke test** | starts the full stack with **all internet egress blocked**, checks health, ports, auth, CSRF and security headers, runs the policy-as-code CLI, and performs a **backup → wipe → restore** drill, including refusing a damaged archive and a wrong encryption key |
+| **Compose smoke test** | starts the full stack with **all internet egress blocked**, checks health, ports, auth, CSRF and security headers, drives SCIM provisioning as Entra ID and Okta do, runs the policy-as-code CLI, and performs a **backup → wipe → restore** drill, including refusing a damaged archive and a wrong encryption key |
 | **Multi-replica** | two API replicas and two workers: concurrent first boot, a replica stopped under load with no failed requests, scale-out picked up without a proxy reload, worker failover |
 | **Failover** | MongoDB replica set and Redis Sentinel: the primary, then the master, is killed under load with approvals in flight. Only fail-closed 503s, automatic recovery, every approved call run exactly once, nothing missing from the audit log |
 | **mTLS** | through the real nginx: agents served by client certificate over REST and MCP; no certificate, a foreign CA, an unregistered certificate, a spoofed certificate header and a revoked credential are all refused; an upstream that requires a client certificate is reached only with one |
@@ -251,7 +253,7 @@ egress blocked, as an air-gapped host would.
 | Design | [Architecture](docs/architecture.md) · [Security model](docs/security-model.md) · [Threat model](docs/threat-model.md) |
 | Integration | [API reference](docs/api-reference.md) · [MCP client configuration](docs/mcp-client-configuration.md) |
 | Deployment | [Deployment](docs/deployment.md) · [Air-gapped installation](docs/air-gapped-installation.md) · [High availability](docs/high-availability.md) |
-| Features | [Approvals and delegation](docs/approvals.md) · [Single sign-on](docs/sso.md) · [LDAP / Active Directory](docs/ldap.md) · [Agent OAuth](docs/agent-oauth.md) · [Mutual TLS](docs/mtls.md) · [SIEM forwarding](docs/siem.md) · [Policy as code](docs/policy-as-code.md) |
+| Features | [Approvals and delegation](docs/approvals.md) · [Single sign-on](docs/sso.md) · [LDAP / Active Directory](docs/ldap.md) · [SCIM provisioning](docs/scim.md) · [Agent OAuth](docs/agent-oauth.md) · [Mutual TLS](docs/mtls.md) · [SIEM forwarding](docs/siem.md) · [Policy as code](docs/policy-as-code.md) |
 | Running it | [Operations and runbooks](docs/operations.md) |
 
 ## Security

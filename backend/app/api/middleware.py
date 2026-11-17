@@ -12,7 +12,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from app.core.errors import DEPENDENCY_ERRORS, ErrorCode, GatewayError, dependency_unavailable
+from app.core.errors import DEPENDENCY_ERRORS, SCIM_PREFIX, ErrorCode, GatewayError, ScimError, dependency_unavailable
 from app.core.logging import get_logger, request_id_var
 
 log = get_logger(__name__)
@@ -99,9 +99,23 @@ def _envelope(code: ErrorCode | str, message: str, rid: str | None, details: lis
     return {"error": err}
 
 
+def _scim_error(exc: ScimError) -> JSONResponse:
+    headers = dict(exc.headers)
+    if exc.status == 401:
+        headers["WWW-Authenticate"] = 'Bearer realm="mcp-gateway-scim"'
+    return JSONResponse(exc.body(), status_code=exc.status, media_type="application/scim+json", headers=headers or None)
+
+
 def install_error_handlers(app: FastAPI) -> None:
+    @app.exception_handler(ScimError)
+    async def scim_error(request: Request, exc: ScimError) -> JSONResponse:
+        return _scim_error(exc)
+
     @app.exception_handler(GatewayError)
     async def gateway_error(request: Request, exc: GatewayError) -> JSONResponse:
+        if request.url.path.startswith(SCIM_PREFIX):  # identity providers expect SCIM's error format
+            return _scim_error(ScimError(exc.status, exc.message, "uniqueness" if exc.code == ErrorCode.CONFLICT
+                                         else None, exc.headers))
         safe_extra = {k: v for k, v in exc.extra.items() if k in ("retry_after_seconds", "scope", "window",
                                                                    "approval_id", "status_url", "expires_at", "fingerprint",
                                                                    "bundle")}
@@ -123,11 +137,15 @@ def install_error_handlers(app: FastAPI) -> None:
             loc = [str(x) for x in e.get("loc", []) if x not in ("body", "query", "path")]
             details.append({"field": ".".join(loc) or "$", "code": e.get("type", "invalid"),
                             "message": str(e.get("msg", ""))[:200]})
+        if request.url.path.startswith(SCIM_PREFIX):
+            return _scim_error(ScimError(400, "The request is invalid.", "invalidValue"))
         return JSONResponse(_envelope(ErrorCode.VALIDATION_FAILED, "The request is invalid.", request_id_var.get(),
                                       details), status_code=422)
 
     @app.exception_handler(StarletteHTTPException)
     async def http_error(request: Request, exc: StarletteHTTPException) -> JSONResponse:
+        if request.url.path.startswith(SCIM_PREFIX):
+            return _scim_error(ScimError(exc.status_code, "Not found" if exc.status_code == 404 else str(exc.detail)))
         code = {404: ErrorCode.NOT_FOUND, 405: ErrorCode.VALIDATION_FAILED, 401: ErrorCode.AUTHENTICATION_REQUIRED,
                 403: ErrorCode.ACCESS_DENIED}.get(exc.status_code, ErrorCode.GATEWAY_INTERNAL_ERROR)
         msg = "Not found." if exc.status_code == 404 else str(exc.detail)[:200]

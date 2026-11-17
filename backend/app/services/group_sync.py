@@ -13,7 +13,7 @@ from typing import Any
 from app.repositories.collections import Repos
 from app.services.audit_service import AuditService
 
-LABELS = {"oidc": "SSO group sync", "ldap": "Directory group sync"}
+LABELS = {"oidc": "SSO group sync", "ldap": "Directory group sync", "scim": "SCIM group sync"}
 
 
 def desired_memberships(rules: Iterable[dict[str, Any]], groups: set[str],
@@ -31,10 +31,10 @@ def desired_memberships(rules: Iterable[dict[str, Any]], groups: set[str],
 
 
 async def sync_memberships(repos: Repos, audit: AuditService, user: dict[str, Any], desired: dict[str, set[str]],
-                           source: str) -> None:
+                           source: str, via: str | None = None) -> None:
     existing = [m async for m in repos.memberships.col.find({"user_id": user["_id"]})]
     by_tenant = {m["tenant_id"]: m for m in existing}
-    actor = {"type": "system", "id": f"{source}-sync", "name": LABELS.get(source, "Group sync")}
+    actor = {"type": "system", "id": f"{via or source}-sync", "name": LABELS.get(via or source, "Group sync")}
     who = {"user_id": user["_id"], "username": user["username"]}
     for tenant_id, roles in desired.items():
         m = by_tenant.get(tenant_id)
