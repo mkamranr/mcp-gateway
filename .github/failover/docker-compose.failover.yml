@@ -49,8 +49,10 @@ x-sentinel: &sentinel
   image: redis:7.4.1-alpine
   user: "redis"
   secrets: [redis_password]
-  # Sentinel rewrites its configuration file, so it is generated into /tmp at start.
-  entrypoint: ["sh", "-c", "printf 'port 26379\\nsentinel resolve-hostnames yes\\nsentinel monitor mgw redis 6379 2\\nsentinel auth-pass mgw %s\\nsentinel down-after-milliseconds mgw 3000\\nsentinel failover-timeout mgw 10000\\nsentinel parallel-syncs mgw 1\\n' \"$$(cat /run/secrets/redis_password)\" > /tmp/sentinel.conf && exec redis-server /tmp/sentinel.conf --sentinel"]
+  # Sentinel rewrites its configuration file, so it is generated into /tmp at start. The master is monitored by
+  # IP, resolved once here: a Compose service name stops resolving when its container dies, and Sentinel's
+  # blocking re-resolution then trips its TILT safety mode, which suppresses the very failover we need.
+  entrypoint: ["sh", "-c", "ip=\"$$(getent hosts redis | awk '{print $$1}')\"; [ -n \"$$ip\" ] || exit 1; printf 'port 26379\\nsentinel monitor mgw %s 6379 2\\nsentinel auth-pass mgw %s\\nsentinel down-after-milliseconds mgw 3000\\nsentinel failover-timeout mgw 10000\\nsentinel parallel-syncs mgw 1\\n' \"$$ip\" \"$$(cat /run/secrets/redis_password)\" > /tmp/sentinel.conf && exec redis-server /tmp/sentinel.conf --sentinel"]
   healthcheck:
     test: ["CMD", "redis-cli", "-p", "26379", "ping"]
     interval: 5s
