@@ -74,6 +74,8 @@ append-only audit log, before anything reaches the upstream server.
 - Agents authenticate with hashed, rotatable, revocable API keys (`mgw_live_…`).
 - Console users: Argon2id passwords, server-side sessions, CSRF protection, six roles.
 - **Single sign-on (OIDC)** with Keycloak, Entra ID, AD FS and others; IdP groups map to roles.
+- **LDAP / Active Directory sign-in** over LDAPS or StartTLS; directory groups (including nested AD groups) map
+  to roles, with break-glass local administrators.
 - **Mutual TLS.** Agents can authenticate with client certificates from your PKI (SPIFFE IDs or pinned
   certificates), and the gateway presents client certificates to upstreams that require them.
 
@@ -234,6 +236,7 @@ Every push and pull request runs in GitHub Actions:
 | **Multi-replica** | two API replicas and two workers: concurrent first boot, a replica stopped under load with no failed requests, scale-out picked up without a proxy reload, worker failover |
 | **Failover** | MongoDB replica set and Redis Sentinel: the primary, then the master, is killed under load with approvals in flight. Only fail-closed 503s, automatic recovery, every approved call run exactly once, nothing missing from the audit log |
 | **mTLS** | through the real nginx: agents served by client certificate over REST and MCP; no certificate, a foreign CA, an unregistered certificate, a spoofed certificate header and a revoked credential are all refused; an upstream that requires a client certificate is reached only with one |
+| **LDAP** | against a real OpenLDAP server: LDAPS and StartTLS, refusal of a host name not in the certificate, a foreign CA and clear text; group search and `memberOf` roles; unmapped users, wrong passwords and filter injection refused; removing a user from a group removes access; local administrators still sign in when the directory is down |
 
 A manual release workflow builds the air-gap bundle, deletes every image, then loads and starts the bundle with
 egress blocked, as an air-gapped host would.
@@ -245,7 +248,7 @@ egress blocked, as an air-gapped host would.
 | Design | [Architecture](docs/architecture.md) · [Security model](docs/security-model.md) · [Threat model](docs/threat-model.md) |
 | Integration | [API reference](docs/api-reference.md) · [MCP client configuration](docs/mcp-client-configuration.md) |
 | Deployment | [Deployment](docs/deployment.md) · [Air-gapped installation](docs/air-gapped-installation.md) · [High availability](docs/high-availability.md) |
-| Features | [Approvals and delegation](docs/approvals.md) · [Single sign-on](docs/sso.md) · [Mutual TLS](docs/mtls.md) · [SIEM forwarding](docs/siem.md) · [Policy as code](docs/policy-as-code.md) |
+| Features | [Approvals and delegation](docs/approvals.md) · [Single sign-on](docs/sso.md) · [LDAP / Active Directory](docs/ldap.md) · [Mutual TLS](docs/mtls.md) · [SIEM forwarding](docs/siem.md) · [Policy as code](docs/policy-as-code.md) |
 | Running it | [Operations and runbooks](docs/operations.md) |
 
 ## Security

@@ -61,7 +61,8 @@ class LdapConfigBase(Strict):
     server_urls: list[str] = Field(default_factory=list, max_length=5)
     start_tls: bool = False
     ca_pem: str = Field(default="", max_length=65536)  # CA bundle for the directory's certificate; "" = system CAs
-    timeout_seconds: float = Field(default=5.0, ge=1, le=30)
+    # Whole seconds: ldap3 packs the receive timeout into a socket option that takes an integer (Linux).
+    timeout_seconds: int = Field(default=5, ge=1, le=30)
     bind_dn: str = Field(default="", max_length=500)  # read-only service account; "" = anonymous search
     user_search_base: str = Field(default="", max_length=500)
     user_filter: str = Field(default="(&(objectClass=person)(uid={username}))", max_length=500)

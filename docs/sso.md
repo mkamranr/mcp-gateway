@@ -4,6 +4,8 @@ MCP-Gateway can sign console users in through one platform-wide OpenID Connect i
 Keycloak, Microsoft Entra ID, AD FS, or any other provider that supports discovery and the authorization code
 flow. SSO applies to **human console users only**. Agents keep using API keys.
 
+To sign users in with a directory password instead (or as well), see [LDAP / Active Directory](ldap.md).
+
 ## How it works
 
 1. The browser opens `GET /api/v1/auth/oidc/login`. The gateway creates a random `state`, a `nonce` and a

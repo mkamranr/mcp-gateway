@@ -17,6 +17,14 @@ IdP groups map to tenant memberships and roles, re-applied at every sign-in. SSO
 password. Local password sign-in can be restricted to named break-glass platform administrators. The SSO
 client secret is write-only and stored AES-256-GCM encrypted. See [sso.md](sso.md).
 
+**LDAP / Active Directory (optional).** Users can sign in on the normal form with their directory account
+(search, then bind as the user, over LDAPS or StartTLS with strict certificate and host-name verification).
+The username is escaped before it goes into the LDAP filter, empty passwords are refused before any bind
+(no unauthenticated binds), and referrals are never followed. Local accounts always use their local password,
+so a directory user can't take over a local account by sharing its username. Directory accounts are keyed
+on the entry's unique ID. Group rules and break-glass work as with SSO. The service-account password is
+write-only and stored AES-256-GCM encrypted. See [ldap.md](ldap.md).
+
 ## Roles
 
 | Role | Scope | Can |

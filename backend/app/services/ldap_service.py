@@ -125,6 +125,8 @@ class LdapService:
             if exc.code == "invalid_credentials" and username:
                 return {"ok": True, "user": None, "detail": "No unique directory entry matches that username."}
             return {"ok": False, "error": exc.code, "detail": exc.detail}
+        except Exception as exc:  # noqa: BLE001 - report, don't 500
+            return {"ok": False, "error": "unavailable", "detail": f"{type(exc).__name__}: {exc}"[:300]}
         out: dict[str, Any] = {"ok": True, "server": server}
         if user is not None:
             desired = desired_memberships(cfg["group_rules"], user.groups, normalize_dn)
@@ -162,8 +164,7 @@ class LdapService:
         cfg = self._config(stored)
         try:
             async with self._slots:
-                found = await asyncio.to_thread(self.directory.authenticate, cfg, self._password(stored),
-                                                username, password)
+                found = await asyncio.to_thread(self._authenticate, cfg, stored, username, password)
         except LdapError as exc:
             if exc.code == "invalid_credentials":
                 raise await self._deny(exc.detail, username, source_ip) from exc
@@ -174,6 +175,15 @@ class LdapService:
             raise GatewayError(ErrorCode.DEPENDENCY_UNAVAILABLE,
                                "The directory is unavailable. Try again later.") from exc
         return await self._provision(cfg, found, source_ip)
+
+    def _authenticate(self, cfg: dict[str, Any], stored: dict[str, Any], username: str,
+                      password: str) -> DirectoryUser:
+        try:
+            return self.directory.authenticate(cfg, self._password(stored), username, password)
+        except LdapError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - an unexpected client error is an outage, not a 500
+            raise LdapError("unavailable", f"{type(exc).__name__}: {exc}") from exc
 
     async def _provision(self, cfg: dict[str, Any], found: DirectoryUser, source_ip: str) -> dict[str, Any]:
         desired = desired_memberships(cfg["group_rules"], found.groups, normalize_dn)

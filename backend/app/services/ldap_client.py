@@ -126,7 +126,7 @@ class LdapDirectory:
         if not secure and not cfg.get("start_tls"):
             if not (self.settings.ldap_allow_insecure and self.settings.app_env != "production"):
                 raise LdapError("config", "the directory connection must use ldaps:// or StartTLS")
-        timeout = float(cfg.get("timeout_seconds") or 5)
+        timeout = int(cfg.get("timeout_seconds") or 5)
         tls = _StrictTls(ssl_context(cfg.get("ca_pem") or ""), host) if secure or cfg.get("start_tls") else None
         server = Server(host, port=u.port or (636 if secure else 389), use_ssl=secure, tls=tls, get_info=NONE,
                         connect_timeout=timeout)
@@ -145,6 +145,9 @@ class LdapDirectory:
             cause = exc.__context__ or exc
             code = "tls" if isinstance(cause, ssl.SSLError) or "certificate" in str(exc).lower() else "unavailable"
             raise LdapError(code, f"{host}: {exc}") from exc
+        except Exception as exc:  # noqa: BLE001 - socket-level errors that ldap3 doesn't wrap
+            conn.unbind()
+            raise LdapError("unavailable", f"{host}: {type(exc).__name__}: {exc}") from exc
         return conn
 
     def _bind(self, url: str, cfg: dict[str, Any], user: str | None, password: str | None) -> Connection:
