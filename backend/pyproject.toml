@@ -4,10 +4,10 @@ version = "0.1.0"
 description = "Secure, policy-enforced execution boundary between AI agents and MCP tools"
 requires-python = ">=3.12,<3.13"
 dependencies = [
-    "fastapi>=0.115",
+    "fastapi>=0.162.7",
     "uvicorn[standard]>=0.54.0",
     "pydantic>=2.9",
-    "pydantic-settings>=2.6",
+    "pydantic-settings>=2.16.3",
     "pymongo>=4.10",
     "redis>=5.2",
     "mcp>=1.9",
@@ -16,7 +16,7 @@ dependencies = [
     "cryptography>=43",
     "structlog>=24.4",
     "httpx>=0.28",
-    "pyjwt[crypto]>=2.10",
+    "pyjwt[crypto]>=2.15.1",
     "pyyaml>=6.0",
     "ldap3>=2.9.1",
 ]
