@@ -1,10 +1,16 @@
 name: CI
 
+# Actions minutes: pushes and pull requests run only the fast jobs (lint, types, unit and security tests, build,
+# dependency scan; about 6 billed minutes). The Docker-based integration jobs (about 20 more) run when started by
+# hand (Actions -> CI -> Run workflow, or `gh workflow run ci.yml --ref <branch>`).
+# Documentation-only changes don't trigger CI.
 on:
   push:
     branches: [main]
+    paths-ignore: ["**.md", "docs/**", "LICENSE", ".github/dependabot.yml"]
   pull_request:
     branches: [main]
+    paths-ignore: ["**.md", "docs/**", "LICENSE", ".github/dependabot.yml"]
   workflow_dispatch:
 
 permissions:
@@ -103,6 +109,7 @@ jobs:
   compose-smoke:
     name: Docker Compose smoke test (no internet egress)
     needs: [backend, frontend]
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -225,6 +232,7 @@ jobs:
   compose-ha:
     name: Multi-replica Compose (2 API replicas, 2 workers)
     needs: [backend, frontend]
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -293,6 +301,7 @@ jobs:
   failover:
     name: Failover (MongoDB replica set, Redis Sentinel)
     needs: [backend, frontend]
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -376,6 +385,7 @@ jobs:
   mtls:
     name: mTLS (agent certificates, upstream client certificates)
     needs: [backend, frontend]
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     env:
@@ -405,6 +415,7 @@ jobs:
   ldap:
     name: LDAP (real OpenLDAP; LDAPS, StartTLS, group sync)
     needs: [backend, frontend]
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     env:
@@ -434,6 +445,7 @@ jobs:
   agent-oauth:
     name: Agent OAuth (real Keycloak; client-credentials tokens)
     needs: [backend, frontend]
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     env:

@@ -1,19 +1,31 @@
+# Monthly, one grouped pull request per ecosystem: every pull request (and every rebase of one) runs CI, which
+# costs Actions minutes. (Dependabot security updates, if enabled in the repository settings, are separate.)
 version: 2
 updates:
   - package-ecosystem: uv
     directory: /backend
-    schedule: { interval: weekly }
-    open-pull-requests-limit: 5
+    schedule: { interval: monthly }
+    open-pull-requests-limit: 2
+    groups:
+      backend: { patterns: ["*"] }
   - package-ecosystem: npm
     directory: /frontend
-    schedule: { interval: weekly }
-    open-pull-requests-limit: 5
+    schedule: { interval: monthly }
+    open-pull-requests-limit: 2
+    groups:
+      frontend: { patterns: ["*"] }
   - package-ecosystem: github-actions
     directory: /
-    schedule: { interval: weekly }
+    schedule: { interval: monthly }
+    groups:
+      actions: { patterns: ["*"] }
   - package-ecosystem: docker
     directory: /backend
-    schedule: { interval: weekly }
+    schedule: { interval: monthly }
+    groups:
+      backend-images: { patterns: ["*"] }
   - package-ecosystem: docker
     directory: /frontend
-    schedule: { interval: weekly }
+    schedule: { interval: monthly }
+    groups:
+      frontend-images: { patterns: ["*"] }

@@ -229,7 +229,10 @@ it starts serving traffic. See [operations](docs/operations.md).
 make check    # ruff + mypy + tsc + full pytest suite + production build
 ```
 
-Every push and pull request runs in GitHub Actions:
+Every push and pull request runs the Backend, Frontend and Dependency scan jobs in GitHub Actions. The Docker-based
+integration jobs (Compose smoke test and below) run on demand: **Actions → CI → Run workflow**, or
+`gh workflow run ci.yml --ref <branch>`. Run them before merging anything that touches the backend, deployment
+or CI.
 
 | Job | What it verifies |
 |---|---|
