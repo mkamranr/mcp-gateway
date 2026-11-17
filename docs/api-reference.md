@@ -38,6 +38,11 @@ Roles: P = platform_admin, T = tenant_admin, S = security_admin, A = approver, U
 | GET | `/sso/config` | P | SSO configuration. Returns `has_client_secret` and `redirect_uri`, never the secret. |
 | PUT | `/sso/config` | P | Full configuration. `client_secret`: omit to keep, `""` to clear. Audited (`sso.config.updated`). |
 | POST | `/sso/test` | P | Discovery and JWKS check of the saved configuration |
+| GET | `/auth/agent-oauth/status` | user | Whether agents can use IdP tokens, and the trusted issuers (`issuer`, `display_name`, `subject_claim`) |
+| POST | `/auth/agent-oauth-clients` | S | `{agent_id, issuer, subject, name?, scopes?, expires_at?}`: OAuth credential for an agent ([agent-oauth.md](agent-oauth.md)). 409 if the issuer + client already belongs to an active credential. Not rotatable; revoke with `/auth/agent-keys/{id}/revoke`. |
+| GET | `/agent-oauth/config` | P | Trusted token issuers |
+| PUT | `/agent-oauth/config` | P | `{enabled, issuers: [{issuer, audience, display_name?, jwks_uri?, subject_claim?, allowed_algorithms?, required_scopes?, max_token_lifetime_seconds?, require_at_jwt_type?}]}`. Audited (`agent_oauth.config.updated`). |
+| POST | `/agent-oauth/test` | P | `{issuer}`: fetches that issuer's signing keys |
 | GET | `/auth/ldap/config` | public | `{enabled, display_name}` for the sign-in page |
 | GET | `/ldap/config` | P | LDAP configuration. Returns `has_bind_password`, never the password. |
 | PUT | `/ldap/config` | P | Full configuration (see [ldap.md](ldap.md)). `bind_password`: omit to keep, `""` to clear. Clear-text `ldap://` without `start_tls` is refused. Audited (`ldap.config.updated`). |

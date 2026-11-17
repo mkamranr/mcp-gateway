@@ -6,6 +6,7 @@ MCP-Gateway supports mutual TLS (mTLS) in two directions:
   managed hosts that already have certificates from an internal PKI, such as SPIFFE/SPIRE, Vault PKI, a
   service mesh or Active Directory Certificate Services. No secret ever needs to be copied into the agent's
   configuration.
+- Agents can also use [IdP access tokens (OAuth 2.0)](agent-oauth.md) instead.
 - **The gateway presents a client certificate to upstream MCP servers** that require one, and can trust an
   upstream's certificate from an internal CA.
 
