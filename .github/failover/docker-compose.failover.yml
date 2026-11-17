@@ -9,31 +9,38 @@
 # The test kills the MongoDB primary and then the Redis master under load. It is a test fixture, not a
 # production layout: in production put each member on its own host (docs/high-availability.md).
 
-x-mongo-member: &mongo-member
+# Lists (secrets, capabilities, security options, networks) are merged with docker-compose.yml's, so services
+# defined there (mongodb, redis) only override scalars and mappings here; new members get the full hardening.
+x-mongo-run: &mongo-run
   image: mongo:7.0.14
   # mongod insists the keyfile is private to its user: copy the secret with the right owner and mode first.
   entrypoint: ["sh", "-c", "install -m 400 -o 999 -g 999 /run/secrets/mongo_keyfile /tmp/keyfile && exec docker-entrypoint.sh mongod --replSet rs0 --keyFile /tmp/keyfile --bind_ip_all --quiet"]
-  secrets: [mongo_root_password, mongo_keyfile]
   healthcheck:
     test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
     interval: 5s
     timeout: 5s
     retries: 30
     start_period: 20s
+
+x-mongo-member: &mongo-member
+  <<: *mongo-run
+  secrets: [mongo_root_password, mongo_keyfile]
   cap_drop: [ALL]
   cap_add: [SETUID, SETGID, CHOWN, DAC_OVERRIDE, FOWNER]
   security_opt: ["no-new-privileges:true"]
   networks: [backend]
 
+x-redis-check: &redis-check
+  test: ["CMD-SHELL", "redis-cli -a \"$$(cat /run/secrets/redis_password)\" --no-auth-warning ping | grep -q PONG"]
+  interval: 5s
+  timeout: 5s
+  retries: 20
+
 x-redis-node: &redis-node
   image: redis:7.4.1-alpine
   user: "redis"
   secrets: [redis_password]
-  healthcheck:
-    test: ["CMD-SHELL", "redis-cli -a \"$$(cat /run/secrets/redis_password)\" --no-auth-warning ping | grep -q PONG"]
-    interval: 5s
-    timeout: 5s
-    retries: 20
+  healthcheck: *redis-check
   cap_drop: [ALL]
   security_opt: ["no-new-privileges:true"]
   networks: [backend]
@@ -78,7 +85,8 @@ services:
 
   # Member 1 also creates the root user on first start (the image's init runs before the replica set exists).
   mongodb:
-    <<: *mongo-member
+    <<: *mongo-run
+    secrets: [mongo_keyfile]
     environment:
       MONGO_INITDB_ROOT_USERNAME: mgw_root
       MONGO_INITDB_ROOT_PASSWORD_FILE: /run/secrets/mongo_root_password
@@ -108,7 +116,7 @@ services:
   # Master at start. min-replicas-to-write 1 makes a master cut off from every replica stop accepting writes,
   # so writes can't be lost on the wrong side of a partition; two replicas keep writes possible after a failover.
   redis:
-    <<: *redis-node
+    healthcheck: *redis-check
     entrypoint: ["sh", "-c", "pw=\"$$(cat /run/secrets/redis_password)\"; exec redis-server --requirepass \"$$pw\" --masterauth \"$$pw\" --appendonly yes --appendfsync everysec --min-replicas-to-write 1 --min-replicas-max-lag 10 --protected-mode yes --maxmemory 512mb --maxmemory-policy noeviction"]
   redis-2: &redis-replica
     <<: *redis-node
