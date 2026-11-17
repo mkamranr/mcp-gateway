@@ -52,9 +52,9 @@ export interface LdapTestResult {
 
 export interface TrustedIssuer {
   issuer: string; display_name: string; audience: string; jwks_uri: string; subject_claim: string
-  allowed_algorithms: string[]; required_scopes: string[]; max_token_lifetime_seconds: number; require_at_jwt_type: boolean
+  allowed_algorithms: string[]; required_scopes: string[]; max_token_lifetime_seconds: number; require_at_jwt_type: boolean; advertise: boolean
 }
-export interface AgentOAuthConfig { enabled: boolean; issuers: TrustedIssuer[]; updated_at: string | null; updated_by: string | null }
+export interface AgentOAuthConfig { enabled: boolean; issuers: TrustedIssuer[]; resource: string; metadata_url: string; updated_at: string | null; updated_by: string | null }
 export interface AgentOAuthStatus { enabled: boolean; issuers: { issuer: string; display_name: string; subject_claim: string }[] }
 
 export interface CertInfo {

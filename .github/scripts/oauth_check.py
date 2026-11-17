@@ -9,7 +9,8 @@ Requires, through the real nginx and gateway containers:
     OAuth credential;
   * a token for another client, a token without the gateway's audience, an ID token, a tampered token and a token
     missing a required scope are refused; API keys keep working;
-  * revoking the credential locks the agent out at once.
+  * revoking the credential locks the agent out at once;
+  * MCP clients can discover the IdP: protected resource metadata and the 401 challenge (RFC 9728).
 """
 
 from __future__ import annotations
@@ -117,6 +118,21 @@ def main() -> None:
     test = admin.ok("POST", "/api/v1/agent-oauth/test", {"issuer": ISSUER})
     expect("gateway fetches Keycloak's keys over HTTPS (internal CA)", test.get("ok") is True
            and test.get("signing_keys", 0) >= 1, test)
+
+    # ---- MCP authorization discovery (RFC 9728), through nginx
+    status, meta = call(console, "GET", "/.well-known/oauth-protected-resource/mcp")
+    expect("protected resource metadata names Keycloak", status == 200
+           and meta.get("authorization_servers") == [ISSUER] and str(meta.get("resource", "")).endswith("/mcp"),
+           (status, meta))
+    req = urllib.request.Request(console + "/mcp", data=b"{}", method="POST",  # noqa: S310
+                                 headers={"Content-Type": "application/json"})
+    try:
+        urllib.request.urlopen(req, timeout=TIMEOUT)  # noqa: S310
+        challenge = ""
+    except urllib.error.HTTPError as e:
+        challenge = e.headers.get("WWW-Authenticate", "") if e.code == 401 else f"HTTP {e.code}"
+    expect("401 from /mcp points at the metadata",
+           'resource_metadata="' in challenge and "/.well-known/oauth-protected-resource/mcp" in challenge, challenge)
 
     # ---- upstream, agent, OAuth credential, policy
     srv = admin.ok("POST", "/api/v1/servers", {"name": "HR", "alias": "hr", "transport": "streamable_http",

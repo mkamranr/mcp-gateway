@@ -53,7 +53,7 @@ instead of treating their credentials as bad.
 
 | IdP | Audience | Client claim | Notes |
 |---|---|---|---|
-| Microsoft Entra ID | the app ID URI of the gateway's app registration, e.g. `api://mcp-gateway` | `azp` (v2 tokens) or `appid` (v1) | Issuer `https://login.microsoftonline.com/<tenant-id>/v2.0`. Set `accessTokenAcceptedVersion: 2` on the gateway's app registration to get v2 tokens. Grant the agent app an application permission (app role) on the gateway's API. |
+| Microsoft Entra ID | v2 tokens: the **application (client) ID** of the gateway's API app registration; v1 tokens: its app ID URI, e.g. `api://mcp-gateway` | `azp` (v2) or `appid` (v1) | Issuer `https://login.microsoftonline.com/<tenant-id>/v2.0` (v1: `https://sts.windows.net/<tenant-id>/`). Set `accessTokenAcceptedVersion: 2` on the API app registration for v2 tokens. Agents request `<app ID URI>/.default`. Grant each agent app an application permission (app role) on the API. Use a separate app registration for the gateway API and for console SSO. |
 | Keycloak | add an *audience* protocol mapper to the client | `azp` | Issuer `https://<host>/realms/<realm>`. Turn off standard flow and direct access grants. `sub` is the service-account user ID, not the client ID. |
 | Okta | the authorization server's audience | `sub` or `cid` | A custom authorization server, with a scope for the gateway. |
 | Auth0 | the API identifier | `azp` or `sub` (`<client-id>@clients`) | Machine-to-machine application authorized for the API. |
@@ -66,13 +66,14 @@ instead of treating their credentials as bad.
 | Field | |
 |---|---|
 | Issuer | exactly the tokens' `iss` |
-| Audience | the gateway's API identifier at that IdP. **Never a client ID:** ID tokens carry the client ID as their audience. |
+| Audience | the gateway's API identifier at that IdP. **Never the client ID of an agent or of the console's SSO app:** ID tokens carry their client's ID as the audience. (Entra ID v2 uses the API app's own client ID, which is fine as long as that app registration is used only for the API.) For MCP-native clients, use the MCP resource URI where your IdP supports resource indicators (RFC 8707). |
 | Client claim | which claim identifies the client (see the table) |
 | JWKS URI | optional; read from `/.well-known/openid-configuration` or `/.well-known/oauth-authorization-server` otherwise |
 | Required scopes | optional; each must be granted |
 | Maximum token lifetime | default 24 h. Tokens valid for longer are refused. |
 | Signing algorithms | asymmetric only; default RS256, PS256, ES256 |
 | Require `at+jwt` | accept only RFC 9068 access tokens |
+| Advertise to MCP clients | list the issuer in the discovery document (below). Off: trusted, but not advertised. |
 
 **Test keys** checks that the gateway can fetch the issuer's keys. Up to 10 issuers can be trusted.
 
@@ -98,8 +99,56 @@ httpx.post("https://gateway.corp.example/api/v1/gateway/tools/hr__get_attendance
            headers={"Authorization": f"Bearer {tok}"}, json={"arguments": {"employee_id": "E1001"}})
 ```
 
-Fetch a new token before the old one expires; most client libraries do this automatically. MCP clients that
-support OAuth client credentials can use the same flow against `/mcp`.
+Fetch a new token before the old one expires; most client libraries do this automatically.
+
+### Without a client secret: `private_key_jwt`
+
+Most IdPs let a client authenticate with a signed JWT instead of a secret (RFC 7523): the agent keeps a private
+key, and the IdP holds only the public key (or a JWKS URL). Nothing that can be replayed crosses the network, and
+the key can live in a TPM, an HSM or a cloud KMS. The gateway needs no change for this; it only sees the
+resulting access token.
+
+```python
+import time, uuid, httpx, jwt
+
+TOKEN_URL = "https://idp.corp.example/realms/corp/protocol/openid-connect/token"
+assertion = jwt.encode({"iss": "hr-bot", "sub": "hr-bot", "aud": TOKEN_URL, "jti": str(uuid.uuid4()),
+                        "iat": int(time.time()), "exp": int(time.time()) + 60},
+                       open("/etc/agent/client.key").read(), algorithm="RS256", headers={"kid": "hr-bot-2026"})
+tok = httpx.post(TOKEN_URL, data={
+    "grant_type": "client_credentials",
+    "client_assertion_type": "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+    "client_assertion": assertion}).json()["access_token"]
+```
+
+Keycloak: client authenticator **Signed JWT**. Entra ID: upload a certificate to the agent's app registration and
+use its thumbprint (`x5t`) as the header instead of `kid`. Okta: `private_key_jwt` with the public key registered
+on the application.
+
+## MCP clients: discovery
+
+MCP clients that implement the MCP authorization specification find the identity provider on their own; the
+user only enters the gateway's MCP URL:
+
+1. The client calls `/mcp` without a token and gets `401` with
+   `WWW-Authenticate: Bearer realm="mcp-gateway", resource_metadata="https://<gateway>/.well-known/oauth-protected-resource/mcp"`.
+2. It reads that document (OAuth 2.0 Protected Resource Metadata, RFC 9728):
+
+   ```json
+   {"resource": "https://gateway.corp.example/mcp",
+    "authorization_servers": ["https://idp.corp.example/realms/corp"],
+    "bearer_methods_supported": ["header"], "resource_name": "MCP-Gateway", "scopes_supported": ["mcp.tools"]}
+   ```
+
+3. It discovers the IdP from its metadata, obtains a token (requesting `resource=https://gateway.corp.example/mcp`,
+   RFC 8707), and calls `/mcp` with it. The token must still pass every check above and map to an OAuth
+   credential.
+
+The document is served only while OAuth for agents is enabled and at least one issuer is advertised; otherwise
+`404`, and the 401 challenge is a plain `Bearer realm="mcp-gateway"`. A rejected token adds
+`error="invalid_token"`. The `resource` URI comes from `PUBLIC_BASE_URL` and `MCP_ENDPOINT_PATH`, never from the
+request, so set `PUBLIC_BASE_URL` to the URL agents use. The gateway REST API answers 401s with the same challenge.
+The document is public and contains nothing secret; it can be read cross-origin.
 
 ## Revocation
 

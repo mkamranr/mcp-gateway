@@ -9,7 +9,7 @@ import { Badge, Callout, Field, ListInput, Panel, QueryState, Switch, useToast }
 const ALGORITHMS = ['RS256', 'RS384', 'RS512', 'PS256', 'PS384', 'PS512', 'ES256', 'ES384', 'ES512', 'EdDSA']
 const BLANK: TrustedIssuer = {
   issuer: '', display_name: '', audience: '', jwks_uri: '', subject_claim: 'sub', allowed_algorithms: ['RS256', 'PS256', 'ES256'],
-  required_scopes: [], max_token_lifetime_seconds: 86400, require_at_jwt_type: false,
+  required_scopes: [], max_token_lifetime_seconds: 86400, require_at_jwt_type: false, advertise: true,
 }
 interface TestResult { ok: boolean; error?: string; detail?: string; jwks_uri?: string; signing_keys?: number }
 
@@ -43,6 +43,11 @@ function Form({ cfg }: { cfg: AgentOAuthConfig }) {
       actions={<div className="toggle-row" style={{ border: 0, padding: 0 }}><span>{enabled ? <Badge color="green">enabled</Badge> : <Badge>disabled</Badge>}</span><Switch on={enabled} onChange={setEnabled} label="Agent OAuth enabled" /></div>}>
       {err && <Callout kind="danger">{errorMessage(err)}</Callout>}
       <Callout>Tokens are verified against the issuer's published keys: signature (asymmetric algorithms only), exact issuer, audience, expiry and lifetime. ID tokens are refused. Nothing secret is stored here.</Callout>
+      <dl className="kv">
+        <dt>MCP resource</dt><dd className="mono">{cfg.resource}</dd>
+        <dt>Discovery for MCP clients</dt><dd className="mono">{cfg.metadata_url}</dd>
+      </dl>
+      <p className="muted" style={{ fontSize: 10 }}>MCP clients that support OAuth read this document (RFC 9728) to find the identity provider. MCP-native clients request tokens for the MCP resource above, so use it as the audience where your identity provider supports resource indicators.</p>
     </Panel>
 
     {issuers.map((it, i) => <Panel key={i} title={it.display_name || it.issuer || 'New issuer'}
@@ -68,6 +73,7 @@ function Form({ cfg }: { cfg: AgentOAuthConfig }) {
       </div>
       <div className="field"><span>Accepted signing algorithms (asymmetric only)</span><div className="chips">{ALGORITHMS.map(a => <label className="check" key={a}>
         <input type="checkbox" checked={it.allowed_algorithms.includes(a)} onChange={e => patch(i, { allowed_algorithms: e.target.checked ? [...it.allowed_algorithms, a] : it.allowed_algorithms.filter(x => x !== a) })} />{a}</label>)}</div></div>
+      <div className="toggle-row"><span>Advertise to MCP clients (listed in the discovery document)</span><Switch on={it.advertise} onChange={v => patch(i, { advertise: v })} label="Advertise" /></div>
       <div className="toggle-row"><span>Require RFC 9068 access tokens (typ at+jwt)</span><Switch on={it.require_at_jwt_type} onChange={v => patch(i, { require_at_jwt_type: v })} label="Require at+jwt" /></div>
     </Panel>)}
 

@@ -170,9 +170,15 @@ class GatewayASGI:
             if principal is None:
                 raise GatewayError(ErrorCode.AUTHENTICATION_REQUIRED)
         except GatewayError as exc:
-            await _json(send, exc.status if exc.status in (401, 403, 429, 503) else 401,
+            status = exc.status if exc.status in (401, 403, 429, 503) else 401
+            extra: list[tuple[bytes, bytes]] = []
+            if status == 401:
+                # Points MCP clients at the protected resource metadata, and through it at the IdP (MCP authorization).
+                challenge = await self.c.agent_oauth.challenge("authorization" in headers)
+                extra.append((b"www-authenticate", challenge.encode("latin-1")))
+            await _json(send, status,
                         {"error": {"code": exc.code.value, "message": exc.message, "request_id": request_id_var.get()}},
-                        [(b"www-authenticate", b'Bearer realm="mcp-gateway"')] if exc.status == 401 else [])
+                        extra)
             return
         scope.setdefault("state", {})["mgw_principal"] = principal
         if scope.get("path", "") in ("", "/"):

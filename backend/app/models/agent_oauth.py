@@ -15,8 +15,8 @@ SCOPE = r"^[\x21\x23-\x5B\x5D-\x7E]{1,200}$"  # RFC 6749 §3.3 scope-token
 class TrustedIssuer(Strict):
     issuer: str = Field(min_length=1, max_length=500)  # exactly the token's "iss"
     display_name: str = Field(default="", max_length=60)
-    # The gateway's resource identifier at this IdP (e.g. api://mcp-gateway). Never a client ID: that would let
-    # ID tokens issued to that client pass as access tokens.
+    # The gateway's resource identifier at this IdP (e.g. api://mcp-gateway, or the MCP URL). Never the client ID of
+    # an agent or of the console's SSO app: ID tokens issued to that client carry it as their audience.
     audience: str = Field(min_length=1, max_length=500)
     jwks_uri: str = Field(default="", max_length=500)  # "" = from the issuer's discovery document
     subject_claim: str = Field(default="sub", pattern=CLAIM)  # which claim identifies the client
@@ -25,6 +25,8 @@ class TrustedIssuer(Strict):
     required_scopes: list[str] = Field(default_factory=list, max_length=20)
     max_token_lifetime_seconds: int = Field(default=86_400, ge=60, le=7 * 86_400)
     require_at_jwt_type: bool = False  # RFC 9068 "typ": "at+jwt"
+    # Listed as an authorization server in the protected resource metadata (RFC 9728), so MCP clients can find it.
+    advertise: bool = True
 
     @field_validator("issuer", "jwks_uri")
     @classmethod

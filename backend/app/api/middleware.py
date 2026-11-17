@@ -105,9 +105,15 @@ def install_error_handlers(app: FastAPI) -> None:
         safe_extra = {k: v for k, v in exc.extra.items() if k in ("retry_after_seconds", "scope", "window",
                                                                    "approval_id", "status_url", "expires_at", "fingerprint",
                                                                    "bundle")}
+        headers = dict(exc.headers or {})
+        if exc.status == 401 and request.url.path.startswith("/api/v1/gateway/"):
+            container = getattr(request.app.state, "container", None)
+            if container is not None:
+                headers["WWW-Authenticate"] = await container.agent_oauth.challenge(
+                    "authorization" in request.headers)
         return JSONResponse(
             _envelope(exc.code, exc.message, request_id_var.get(), exc.details, safe_extra or None),
-            status_code=exc.status, headers=exc.headers,
+            status_code=exc.status, headers=headers or None,
         )
 
     @app.exception_handler(RequestValidationError)

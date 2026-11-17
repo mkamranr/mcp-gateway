@@ -227,3 +227,41 @@ async def test_issuer_test_endpoint(admin, mock_idp):
     r = await admin.post("/api/v1/agent-oauth/test", json={"issuer": mock_idp.issuer})
     assert r.json() == {"ok": True, "jwks_uri": f"{mock_idp.issuer}/jwks", "signing_keys": 1}
     assert (await admin.post("/api/v1/agent-oauth/test", json={"issuer": "https://x.example"})).status_code == 404
+
+
+# ---------------------------------------------------------------- MCP authorization discovery (RFC 9728)
+async def test_protected_resource_metadata(anon, admin, mock_idp, settings):
+    resource = settings.public_base_url.rstrip("/") + "/mcp"
+    assert (await anon.get("/.well-known/oauth-protected-resource/mcp")).status_code == 404  # not enabled yet
+    await trust(admin, mock_idp, required_scopes=["mcp.tools"])
+    for path in ("/.well-known/oauth-protected-resource/mcp", "/.well-known/oauth-protected-resource"):
+        r = await anon.get(path)
+        assert r.status_code == 200, (path, r.text)
+        assert r.json() == {"resource": resource, "authorization_servers": [mock_idp.issuer],
+                            "bearer_methods_supported": ["header"], "resource_name": "MCP-Gateway",
+                            "scopes_supported": ["mcp.tools"]}
+        assert r.headers["access-control-allow-origin"] == "*"
+    assert (await anon.get("/.well-known/oauth-protected-resource/other")).status_code == 404
+    # An issuer can be trusted without being advertised.
+    r = await admin.put("/api/v1/agent-oauth/config", json={"enabled": True, "issuers": [
+        {"issuer": mock_idp.issuer, "audience": mock_idp.api_audience, "advertise": False}]})
+    assert r.status_code == 200 and r.json()["metadata_url"].endswith("/.well-known/oauth-protected-resource/mcp")
+    assert (await anon.get("/.well-known/oauth-protected-resource/mcp")).status_code == 404
+
+
+async def test_401_challenge_points_mcp_clients_at_the_metadata(app, admin, mock_idp, settings):
+    async def challenge(path: str, headers: dict[str, str]) -> str:
+        async with make_client(app) as http:
+            r = await http.post(path, json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+                                headers={"Accept": "application/json, text/event-stream", **headers})
+        assert r.status_code == 401, r.text
+        return r.headers["www-authenticate"]
+
+    assert await challenge("/mcp", {}) == 'Bearer realm="mcp-gateway"'  # OAuth off: plain Bearer challenge
+    await trust(admin, mock_idp)
+    meta = settings.public_base_url.rstrip("/") + "/.well-known/oauth-protected-resource/mcp"
+    assert await challenge("/mcp", {}) == f'Bearer realm="mcp-gateway", resource_metadata="{meta}"'
+    assert await challenge("/mcp", {"Authorization": "Bearer x.y.z"}) == \
+        f'Bearer realm="mcp-gateway", resource_metadata="{meta}", error="invalid_token"'
+    rest = await challenge("/api/v1/gateway/tools/hr__x/invoke", {"Authorization": "Bearer mgw_live_bad"})
+    assert rest == f'Bearer realm="mcp-gateway", resource_metadata="{meta}", error="invalid_token"'

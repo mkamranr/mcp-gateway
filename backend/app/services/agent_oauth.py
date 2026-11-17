@@ -83,7 +83,8 @@ class AgentOAuthService:
         raw = await self.repos.settings.get_value(CONFIG_KEY) or {}
         known = {k: v for k, v in raw.items() if k in AgentOAuthConfig.model_fields}
         cfg = AgentOAuthConfig.model_validate(known).model_dump() if known else AgentOAuthConfig().model_dump()
-        cfg.update({"updated_at": raw.get("updated_at"), "updated_by": raw.get("updated_by")})
+        cfg.update({"updated_at": raw.get("updated_at"), "updated_by": raw.get("updated_by"),
+                    "resource": self.resource, "metadata_url": self.metadata_url})
         self._config = _Cached(cfg, now + CONFIG_CACHE_SECONDS)
         return dict(cfg)
 
@@ -92,6 +93,49 @@ class AgentOAuthService:
         return {"enabled": cfg["enabled"],
                 "issuers": [{"issuer": i["issuer"], "display_name": i["display_name"] or i["issuer"],
                              "subject_claim": i["subject_claim"]} for i in cfg["issuers"]]}
+
+    # ------------------------------------------------------------------ discovery (MCP authorization, RFC 9728)
+    @property
+    def resource(self) -> str:
+        """The MCP endpoint's canonical URI: from configuration, never from the request's Host header."""
+        return self.settings.public_base_url.rstrip("/") + self.settings.mcp_endpoint_path.rstrip("/")
+
+    @property
+    def metadata_url(self) -> str:
+        path = self.settings.mcp_endpoint_path.rstrip("/")
+        return self.settings.public_base_url.rstrip("/") + "/.well-known/oauth-protected-resource" + path
+
+    async def resource_metadata(self) -> dict[str, Any] | None:
+        """OAuth 2.0 Protected Resource Metadata for the MCP endpoint, or None while no issuer is advertised."""
+        cfg = await self.config()
+        advertised = [i for i in cfg["issuers"] if i.get("advertise", True)] if cfg["enabled"] else []
+        if not advertised:
+            return None
+        doc: dict[str, Any] = {
+            "resource": self.resource,
+            "authorization_servers": [i["issuer"] for i in advertised],
+            "bearer_methods_supported": ["header"],
+            "resource_name": "MCP-Gateway",
+        }
+        scopes = sorted({s for i in advertised for s in i["required_scopes"]})
+        if scopes:
+            doc["scopes_supported"] = scopes
+        return doc
+
+    async def challenge(self, token_presented: bool) -> str:
+        """The WWW-Authenticate value for a 401 from an agent endpoint (RFC 6750 §3, RFC 9728 §5.1)."""
+        value = 'Bearer realm="mcp-gateway"'
+        try:
+            meta = await self.resource_metadata()
+        except Exception:  # noqa: BLE001 - a challenge must never fail the response
+            meta = None
+        if meta is not None:
+            value += f', resource_metadata="{self.metadata_url}"'
+            if meta.get("scopes_supported"):
+                value += f', scope="{" ".join(meta["scopes_supported"])}"'
+        if token_presented:
+            value += ', error="invalid_token"'
+        return value
 
     async def update_config(self, p: Principal, body: AgentOAuthConfig) -> dict[str, Any]:
         old = await self.config(fresh=True)

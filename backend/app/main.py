@@ -64,6 +64,7 @@ def create_app(settings: Settings | None = None, container: Container | None = N
         api.include_router(r)
     app.include_router(api)
     app.include_router(health.router)
+    app.include_router(agent_oauth.wellknown)
     # Exact routes (not a Mount) so clients never receive a 307 redirect from /mcp to /mcp/.
     gateway = GatewayASGI(c, manager)
     path = settings.mcp_endpoint_path.rstrip("/")

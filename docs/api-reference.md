@@ -40,8 +40,9 @@ Roles: P = platform_admin, T = tenant_admin, S = security_admin, A = approver, U
 | POST | `/sso/test` | P | Discovery and JWKS check of the saved configuration |
 | GET | `/auth/agent-oauth/status` | user | Whether agents can use IdP tokens, and the trusted issuers (`issuer`, `display_name`, `subject_claim`) |
 | POST | `/auth/agent-oauth-clients` | S | `{agent_id, issuer, subject, name?, scopes?, expires_at?}`: OAuth credential for an agent ([agent-oauth.md](agent-oauth.md)). 409 if the issuer + client already belongs to an active credential. Not rotatable; revoke with `/auth/agent-keys/{id}/revoke`. |
-| GET | `/agent-oauth/config` | P | Trusted token issuers |
-| PUT | `/agent-oauth/config` | P | `{enabled, issuers: [{issuer, audience, display_name?, jwks_uri?, subject_claim?, allowed_algorithms?, required_scopes?, max_token_lifetime_seconds?, require_at_jwt_type?}]}`. Audited (`agent_oauth.config.updated`). |
+| GET | `/.well-known/oauth-protected-resource/mcp` | public | OAuth 2.0 Protected Resource Metadata for the MCP endpoint (RFC 9728): `resource`, `authorization_servers` (advertised issuers), `bearer_methods_supported`, `scopes_supported`. 404 unless agent OAuth is enabled with an advertised issuer. Also served at `/.well-known/oauth-protected-resource`. |
+| GET | `/agent-oauth/config` | P | Trusted token issuers, plus the MCP `resource` URI and `metadata_url` |
+| PUT | `/agent-oauth/config` | P | `{enabled, issuers: [{issuer, audience, display_name?, jwks_uri?, subject_claim?, allowed_algorithms?, required_scopes?, max_token_lifetime_seconds?, require_at_jwt_type?, advertise?}]}`. Audited (`agent_oauth.config.updated`). |
 | POST | `/agent-oauth/test` | P | `{issuer}`: fetches that issuer's signing keys |
 | GET | `/auth/ldap/config` | public | `{enabled, display_name}` for the sign-in page |
 | GET | `/ldap/config` | P | LDAP configuration. Returns `has_bind_password`, never the password. |

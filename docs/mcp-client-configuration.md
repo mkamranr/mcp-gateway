@@ -47,6 +47,13 @@ async with http, Client(streamable_http_client("https://gw.example/mcp", http_cl
 
 A complete runnable example lives in [`deploy/examples/demo_agent.py`](../deploy/examples/demo_agent.py).
 
+## Clients with OAuth support
+
+If agent OAuth is enabled ([agent-oauth.md](agent-oauth.md)), clients that implement MCP authorization need only the
+URL: a request without a token gets a `401` whose `WWW-Authenticate` header points to
+`/.well-known/oauth-protected-resource/mcp`, which names the identity provider. The client obtains a token there and
+retries. The agent's client must still be linked to an agent under **Agents → Add OAuth client**.
+
 ## Clients that only support stdio
 
 Run a local stdio-to-HTTP bridge from your MCP tooling that forwards to the gateway URL with the
