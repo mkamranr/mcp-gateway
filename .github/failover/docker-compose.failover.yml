@@ -136,7 +136,11 @@ services:
     read_only: true
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
-    healthcheck: { disable: true }
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 9100), 3).close()"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
     networks: [frontend]
 
 secrets:
