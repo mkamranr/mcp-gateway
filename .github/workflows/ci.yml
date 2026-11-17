@@ -370,3 +370,32 @@ jobs:
       - name: Tear down
         if: always()
         run: docker compose down -v
+
+  mtls:
+    name: mTLS (agent certificates, upstream client certificates)
+    needs: [backend, frontend]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      COMPOSE_FILE: docker-compose.yml:.github/mtls/docker-compose.mtls.yml
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Secrets, throwaway PKI, images
+        run: |
+          sh deploy/scripts/generate-secrets.sh
+          cp .env.example .env
+          sh .github/mtls/make-pki.sh
+          docker compose build gateway-api web-ui
+          docker compose pull mongodb redis
+      - name: Start (console on 8088, agent mTLS listener on 8443, upstream behind mTLS)
+        run: |
+          docker compose up -d --no-build --pull never --wait --wait-timeout 300
+          docker compose ps
+      - name: End-to-end mTLS checks
+        run: python3 .github/scripts/mtls_check.py http://127.0.0.1:8088 https://127.0.0.1:8443 secrets/bootstrap_admin_password .github/mtls/pki
+      - name: Logs
+        if: always()
+        run: docker compose logs --no-color --tail=200
+      - name: Tear down
+        if: always()
+        run: docker compose down -v

@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import json
 import re
+import ssl
 from typing import Any
 
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError
 
 from app.config import Settings
+from app.core.client_certs import CertificateError, check_key_pair, describe, load_pem_certificates
 from app.core.crypto import Encryptor
 from app.core.errors import ErrorCode, GatewayError, not_found
 from app.core.identity import Principal
@@ -18,7 +20,7 @@ from app.mcp.adapters.base import ToolDefinition, UpstreamError
 from app.mcp.adapters.sdk import validate_stdio_config
 from app.mcp.client_manager import ClientManager
 from app.mcp.net_guard import NetPolicy, validate_url
-from app.models.registry import ServerCreate, ServerUpdate, ToolUpdate
+from app.models.registry import ClientCertificateInput, ServerCreate, ServerUpdate, ToolUpdate
 from app.repositories.collections import Repos
 from app.services.audit_service import AuditService
 
@@ -81,10 +83,29 @@ class RegistryService:
         )
         return str(doc["_id"])
 
+    @staticmethod
+    def _ca_info(ca_pem: str) -> list[dict[str, Any]]:
+        try:
+            certs = load_pem_certificates(ca_pem)
+            ssl.create_default_context(cadata=ca_pem)  # what the connection will do with it
+        except (CertificateError, ssl.SSLError) as exc:
+            raise GatewayError(ErrorCode.VALIDATION_FAILED, f"CA bundle: {exc}") from None
+        return [describe(c).to_api() for c in certs]
+
+    async def _store_client_certificate(self, tenant_id: str, server_id: str, cert: ClientCertificateInput,
+                                        existing: str | None) -> tuple[str, dict[str, Any]]:
+        """Validate the pair, keep the certificate (public) in the config and the private key encrypted."""
+        try:
+            info = check_key_pair(cert.cert_pem, cert.key_pem)
+        except CertificateError as exc:
+            raise GatewayError(ErrorCode.VALIDATION_FAILED, f"Client certificate: {exc}") from None
+        ref = await self._store_secret(tenant_id, server_id, {"key_pem": cert.key_pem}, existing)
+        return ref, {**info.to_api(), "cert_pem": cert.cert_pem}
+
     # ------------------------------------------------------------------ servers
     async def create_server(self, p: Principal, data: ServerCreate) -> dict[str, Any]:
         self._check_private_permission(p, data.allow_private_network)
-        cfg = {
+        cfg: dict[str, Any] = {
             "endpoint": data.endpoint,
             "command": data.command,
             "args": data.args,
@@ -92,6 +113,13 @@ class RegistryService:
             "cwd": data.cwd,
             "verify_tls": data.verify_tls,
         }
+        if data.tls_ca_pem:
+            cfg["tls_ca_pem"], cfg["tls_ca_info"] = data.tls_ca_pem, self._ca_info(data.tls_ca_pem)
+        if data.client_certificate:  # checked before anything is written
+            try:
+                check_key_pair(data.client_certificate.cert_pem, data.client_certificate.key_pem)
+            except CertificateError as exc:
+                raise GatewayError(ErrorCode.VALIDATION_FAILED, f"Client certificate: {exc}") from None
         self._validate_connection(data.transport, cfg, data.allow_private_network)
         doc = await self.repos.servers.insert(
             p.tenant_id,
@@ -124,10 +152,16 @@ class RegistryService:
             doc = await self.repos.servers.col.find_one_and_update(
                 {"_id": doc["_id"], "tenant_id": p.tenant_id}, {"$set": {"secret_ref": ref}}, return_document=True
             )
+        if data.client_certificate:
+            ref, info = await self._store_client_certificate(p.tenant_id, doc["_id"], data.client_certificate, None)
+            doc = await self.repos.servers.col.find_one_and_update(
+                {"_id": doc["_id"], "tenant_id": p.tenant_id},
+                {"$set": {"tls_secret_ref": ref, "connection_config.tls_client_info": info}}, return_document=True)
         await self.audit.record(
             p.tenant_id, "server.registered", principal=p,
             resource={"server_id": doc["_id"], "server_name": data.name},
-            metadata={"transport": data.transport, "allow_private_network": data.allow_private_network},
+            metadata={"transport": data.transport, "allow_private_network": data.allow_private_network,
+                      "client_certificate": bool(data.client_certificate), "custom_ca": bool(data.tls_ca_pem)},
         )
         return doc
 
@@ -146,16 +180,40 @@ class RegistryService:
     async def update_server(self, p: Principal, server_id: str, data: ServerUpdate) -> dict[str, Any]:
         current = await self.get_server(p, server_id)
         changes: dict[str, Any] = {"updated_by": p.principal_id}
-        fields = data.model_dump(exclude_unset=True, exclude={"version", "secret"})
+        fields = data.model_dump(exclude_unset=True,
+                                 exclude={"version", "secret", "client_certificate", "remove_client_certificate"})
         cfg = dict(current.get("connection_config", {}))
         for key in ("endpoint", "command", "args", "env", "cwd", "verify_tls"):
             if key in fields:
                 cfg[key] = fields.pop(key)
+        tls_changed = False
+        if "tls_ca_pem" in fields:
+            ca = fields.pop("tls_ca_pem")
+            if ca:
+                cfg["tls_ca_pem"], cfg["tls_ca_info"] = ca, self._ca_info(ca)
+            else:
+                cfg.pop("tls_ca_pem", None)
+                cfg.pop("tls_ca_info", None)
+            tls_changed = True
+        if (data.client_certificate or data.remove_client_certificate) and current["transport"] != "streamable_http":
+            raise GatewayError(ErrorCode.VALIDATION_FAILED, "TLS settings apply to streamable_http servers only.")
+        if data.client_certificate:
+            ref, info = await self._store_client_certificate(p.tenant_id, server_id, data.client_certificate,
+                                                             current.get("tls_secret_ref"))
+            changes["tls_secret_ref"], cfg["tls_client_info"] = ref, info
+            tls_changed = True
+        elif data.remove_client_certificate and current.get("tls_secret_ref"):
+            await self.repos.secrets.delete(p.tenant_id, current["tls_secret_ref"])
+            changes["tls_secret_ref"] = None
+            cfg.pop("tls_client_info", None)
+            tls_changed = True
         allow_private = fields.get("allow_private_network", current.get("allow_private_network", False))
         if "allow_private_network" in fields:
             self._check_private_permission(p, bool(fields["allow_private_network"]))
         if cfg != current.get("connection_config") or "allow_private_network" in fields:
             self._validate_connection(current["transport"], cfg, allow_private)
+            changes["connection_config"] = cfg
+        if tls_changed:
             changes["connection_config"] = cfg
         changes.update(fields)
         if data.secret is not None:
@@ -168,7 +226,9 @@ class RegistryService:
             event = "server.enabled" if fields["enabled"] else "server.disabled"
         await self.audit.record(
             p.tenant_id, event, principal=p, resource={"server_id": server_id, "server_name": doc["name"]},
-            metadata={"changed_fields": sorted(set(changes) - {"updated_by"}), "secret_rotated": data.secret is not None},
+            metadata={"changed_fields": sorted(set(changes) - {"updated_by"}), "secret_rotated": data.secret is not None,
+                      "client_certificate": "replaced" if data.client_certificate else
+                      "removed" if data.remove_client_certificate else None},
         )
         return doc
 

@@ -164,12 +164,11 @@ class GatewayASGI:
         if scope["type"] != "http":
             return
         headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers") or []}
-        auth = headers.get("authorization", "")
         client = scope.get("client")
         try:
-            if not auth.lower().startswith("bearer "):
+            principal = await self.c.auth.authenticate_agent(headers, source=client[0] if client else None)
+            if principal is None:
                 raise GatewayError(ErrorCode.AUTHENTICATION_REQUIRED)
-            principal = await self.c.auth.authenticate_api_key(auth[7:], source=client[0] if client else None)
         except GatewayError as exc:
             await _json(send, exc.status if exc.status in (401, 403, 429, 503) else 401,
                         {"error": {"code": exc.code.value, "message": exc.message, "request_id": request_id_var.get()}},

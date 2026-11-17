@@ -9,15 +9,18 @@ from __future__ import annotations
 
 import json
 import secrets
+import ssl
 import time
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from typing import Any
 
 import anyio
+import certifi
 from redis.asyncio import Redis
 
 from app.config import Settings
+from app.core.client_certs import build_ssl_context
 from app.core.crypto import Encryptor
 from app.core.errors import ErrorCode, GatewayError
 from app.core.logging import get_logger
@@ -48,6 +51,9 @@ class ClientManager:
         self.encryptor = encryptor
         self.redis = redis
         self._sem_acquire = redis.register_script(SEM_ACQUIRE)
+        # SSL contexts for upstreams with a custom CA or a client certificate, per server version: building one
+        # decrypts the key and parses the bundle, which is too slow to repeat on every call.
+        self._ssl_cache: dict[str, tuple[Any, ssl.SSLContext]] = {}
         self.adapter_factory: Callable[[dict[str, Any]], MCPServerAdapter] = self._default_factory
 
     def net_policy_for(self, server: dict[str, Any]) -> NetPolicy:
@@ -74,6 +80,7 @@ class ClientManager:
                     headers[value.get("header_name", "X-API-Key")] = value["token"]
                 elif mode == "env":
                     env.update({k: str(v) for k, v in value.get("env", {}).items()})
+        ssl_context = await self._ssl_context(server, cfg)
         return ServerConfig(
             server_id=server["_id"],
             transport=server["transport"],
@@ -86,7 +93,30 @@ class ClientManager:
             connection_timeout_seconds=float(server.get("connection_timeout_seconds", 10)),
             request_timeout_seconds=float(server.get("request_timeout_seconds", 30)),
             verify_tls=bool(cfg.get("verify_tls", True)),
+            ssl_context=ssl_context,
         )
+
+    async def _ssl_context(self, server: dict[str, Any], cfg: dict[str, Any]) -> ssl.SSLContext | None:
+        if server.get("transport") != "streamable_http" or not (cfg.get("tls_ca_pem") or server.get("tls_secret_ref")):
+            return None  # the HTTP client's defaults
+        stamp = (server.get("version"), server.get("updated_at"), server.get("tls_secret_ref"), cfg.get("verify_tls"))
+        cached = self._ssl_cache.get(server["_id"])
+        if cached and cached[0] == stamp:
+            return cached[1]
+        key_pem = None
+        if server.get("tls_secret_ref"):
+            secret = await self.repos.secrets.get(server["tenant_id"], server["tls_secret_ref"])
+            if secret:
+                key_pem = json.loads(self.encryptor.decrypt(
+                    secret["ciphertext"], f"{server['tenant_id']}:{secret['_id']}"))["key_pem"]
+        try:
+            ctx = build_ssl_context(verify=bool(cfg.get("verify_tls", True)), ca_pem=cfg.get("tls_ca_pem"),
+                                    cert_pem=(cfg.get("tls_client_info") or {}).get("cert_pem"), key_pem=key_pem,
+                                    default_cafile=certifi.where())
+        except (ssl.SSLError, OSError, ValueError) as exc:
+            raise UpstreamError("blocked", "The server's TLS settings could not be loaded") from exc
+        self._ssl_cache[server["_id"]] = (stamp, ctx)
+        return ctx
 
     @staticmethod
     def semaphore_key(server: dict[str, Any]) -> str:

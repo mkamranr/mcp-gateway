@@ -1,0 +1,44 @@
+# mTLS test topology (CI job "mtls"), layered on docker-compose.yml:
+#
+#   sh .github/mtls/make-pki.sh
+#   COMPOSE_FILE=docker-compose.yml:.github/mtls/docker-compose.mtls.yml docker compose up -d --wait
+#
+# - web-ui serves an agent mTLS listener on 8443 (deploy/mtls/agent-mtls.conf) next to the console on 8088.
+# - gateway-api accepts forwarded certificates only from the edge network (web-ui).
+# - mock-upstream-tls is the mock MCP server behind TLS that requires a client certificate.
+
+x-mtls-env: &mtls-env
+  MTLS_CLIENT_CA_FILE: /run/secrets/agent_ca
+  MTLS_TRUSTED_PROXIES: ${MGW_EDGE_SUBNET:-172.31.250.0/24}
+
+services:
+  gateway-api:
+    environment: *mtls-env
+    secrets: [agent_ca]
+
+  worker:
+    environment: *mtls-env
+    secrets: [agent_ca]
+
+  web-ui:
+    ports: ["127.0.0.1:8443:8443"]
+    volumes: ["./.github/mtls/pki/nginx:/etc/nginx/mtls:ro"]
+
+  mock-upstream-tls:
+    image: ${MGW_BACKEND_IMAGE:-mcp-gateway/backend:0.1.0}
+    command: ["python", "-m", "devtools.mock_mcp_server", "--host", "0.0.0.0", "--port", "9443",
+              "--tls-cert", "/pki/upstream.pem", "--tls-key", "/pki/upstream.key",
+              "--client-ca", "/pki/upstream-client-ca.pem"]
+    volumes: ["./backend/devtools:/app/devtools:ro", "./.github/mtls/pki/upstream:/pki:ro"]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 9443), 3).close()"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks: [frontend]  # the gateway's egress network, like a real upstream; not the edge network
+
+secrets:
+  agent_ca: { file: ./.github/mtls/pki/agent-ca.pem }

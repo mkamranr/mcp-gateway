@@ -36,9 +36,9 @@ async def get_principal(request: Request, c: Container = Depends(get_container))
     cached = getattr(request.state, "principal", None)
     if cached is not None:
         return cached  # type: ignore[no-any-return]
-    auth = request.headers.get("authorization", "")
-    if auth.lower().startswith("bearer "):
-        principal = await c.auth.authenticate_api_key(auth[7:], source=client_ip(request))
+    agent = await c.auth.authenticate_agent(request.headers, source=client_ip(request))
+    if agent is not None:
+        principal = agent
     else:
         sid = request.cookies.get(session_cookie_name(c.settings.cookie_secure))
         if not sid:

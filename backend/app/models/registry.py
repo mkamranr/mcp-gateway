@@ -24,6 +24,14 @@ class SecretInput(Strict):
     env: dict[str, str] | None = None
 
 
+class ClientCertificateInput(Strict):
+    """The client certificate the gateway presents to an upstream that requires mTLS. ``key_pem`` is
+    write-only: it is stored encrypted and never returned."""
+
+    cert_pem: str = Field(min_length=1, max_length=65_536, description="Certificate, optionally followed by chain")
+    key_pem: str = Field(min_length=1, max_length=16_384, repr=False, description="Unencrypted PEM private key")
+
+
 class ServerBase(Strict):
     description: str = Field(default="", max_length=2000)
     environment: Environment = "production"
@@ -35,6 +43,8 @@ class ServerBase(Strict):
     env: dict[str, str] = Field(default_factory=dict)
     cwd: str | None = Field(default=None, max_length=1024)
     verify_tls: bool = True
+    tls_ca_pem: str | None = Field(default=None, max_length=262_144,
+                                   description="CA bundle for the upstream's certificate; default: system CAs")
     authentication_mode: AuthMode = "none"
     connection_timeout_seconds: float = Field(default=10, ge=1, le=120)
     request_timeout_seconds: float = Field(default=30, ge=1, le=300)
@@ -48,9 +58,12 @@ class ServerCreate(ServerBase):
     transport: Transport
     enabled: bool = True
     secret: SecretInput | None = None
+    client_certificate: ClientCertificateInput | None = None
 
     @model_validator(mode="after")
     def _check_transport(self) -> ServerCreate:
+        if self.transport != "streamable_http" and (self.client_certificate or self.tls_ca_pem):
+            raise ValueError("TLS settings apply to streamable_http servers only")
         if self.transport == "streamable_http" and not self.endpoint:
             raise ValueError("endpoint is required for streamable_http servers")
         if self.transport == "stdio" and not self.command:
@@ -73,8 +86,11 @@ class ServerUpdate(Strict):
     env: dict[str, str] | None = None
     cwd: str | None = None
     verify_tls: bool | None = None
+    tls_ca_pem: str | None = Field(default=None, max_length=262_144, description="Empty string removes it")
     authentication_mode: AuthMode | None = None
     secret: SecretInput | None = None
+    client_certificate: ClientCertificateInput | None = None
+    remove_client_certificate: bool = False
     connection_timeout_seconds: float | None = Field(default=None, ge=1, le=120)
     request_timeout_seconds: float | None = Field(default=None, ge=1, le=300)
     max_concurrent_calls: int | None = Field(default=None, ge=1, le=200)
@@ -155,6 +171,7 @@ def server_to_api(doc: dict[str, Any]) -> dict[str, Any]:
         "env_keys": sorted((cfg.get("env") or {}).keys()),
         "cwd": cfg.get("cwd"),
         "verify_tls": cfg.get("verify_tls", True),
+        "tls": {"ca_certificates": cfg.get("tls_ca_info") or [], "client_certificate": cfg.get("tls_client_info")},
         "enabled": doc.get("enabled", False),
         "archived": doc.get("archived", False),
         "environment": doc.get("environment"),

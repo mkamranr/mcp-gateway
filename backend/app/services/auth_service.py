@@ -1,15 +1,17 @@
-"""Authentication: local users with server-side sessions, and agent API keys (spec §7)."""
+"""Authentication: local users with server-side sessions, and agents by API key or client certificate (spec §7)."""
 
 from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from datetime import timedelta
 from typing import Any
 
 from redis.asyncio import Redis
 
 from app.config import Settings
+from app.core.client_certs import CertificateError, ClientCertVerifier, address_in, decode_forwarded, parse_networks
 from app.core.crypto import (
     constant_time_equals,
     hash_api_key,
@@ -36,6 +38,10 @@ class AuthService:
         self.repos = repos
         self.redis = redis
         self.audit = audit
+        # Agent client certificates: loaded once at startup, so a bad CA bundle stops the service right away.
+        self.cert_verifier = ClientCertVerifier.from_file(settings.mtls_client_ca_file) \
+            if settings.mtls_client_ca_file else None
+        self.cert_proxies = parse_networks(settings.mtls_trusted_proxies)
 
     # ------------------------------------------------------------------ rate limiting
     @staticmethod
@@ -228,6 +234,43 @@ class AuthService:
         await self.audit.record(principal.tenant_id, "auth.password.changed", principal=principal)
 
     # ------------------------------------------------------------------ agents
+    async def authenticate_agent(self, headers: Mapping[str, str], source: str | None) -> Principal | None:
+        """An agent credential on the request: an API key (``Authorization: Bearer``), else a client certificate
+        forwarded by a trusted TLS proxy. ``None`` when the request carries neither. ``headers`` are lower-case."""
+        auth = headers.get("authorization", "")
+        if auth.lower().startswith("bearer "):
+            return await self.authenticate_api_key(auth[7:], source=source)
+        forwarded = headers.get(self.settings.mtls_client_cert_header.lower(), "")
+        if not forwarded or self.cert_verifier is None:
+            return None
+        if not address_in(source, self.cert_proxies):
+            # Only the proxy that did the TLS handshake may vouch for a certificate: a certificate is public, so
+            # anyone else sending this header proves nothing. Ignored, and logged as a possible spoofing attempt.
+            log.warning("auth.client_cert.untrusted_source", source=source)
+            return None
+        return await self.authenticate_client_cert(forwarded, source=source)
+
+    async def authenticate_client_cert(self, forwarded: str, source: str | None = None) -> Principal:
+        """Resolve a client certificate, already verified by the TLS proxy, to an agent Principal."""
+        if self.cert_verifier is None:
+            raise GatewayError(ErrorCode.INVALID_CREDENTIAL)
+        try:
+            info = self.cert_verifier.verify(decode_forwarded(forwarded))
+        except CertificateError as exc:
+            log.info("auth.client_cert.rejected", reason=str(exc))
+            raise GatewayError(ErrorCode.INVALID_CREDENTIAL) from None
+        await self._throttle(f"cert:{info.fingerprint_sha256[:32]}", 6000, 60)
+        pinned = f"fp:{info.fingerprint_sha256}"
+        creds = await self.repos.credentials.by_cert_match_global([pinned, *(f"san:{n}" for n in info.sans)])
+        exact = [c for c in creds if c["cert_match"] == pinned]
+        matches = exact or creds
+        if len(matches) != 1:
+            # None, or one certificate naming several agents: never guess which one is meant.
+            if len(matches) > 1:
+                log.warning("auth.client_cert.ambiguous", fingerprint=info.fingerprint_sha256[:16])
+            raise GatewayError(ErrorCode.INVALID_CREDENTIAL)
+        return await self._agent_principal(matches[0], source)
+
     async def authenticate_api_key(self, raw_key: str, source: str | None = None) -> Principal:
         """Resolve an agent API key to a Principal. Every failure path is indistinguishable to the caller."""
         prefix = split_api_key(raw_key.strip())
@@ -239,6 +282,10 @@ class AuthService:
         presented = hash_api_key(raw_key.strip(), self.settings.api_key_hash_pepper)
         if not cred or not constant_time_equals(presented, expected):
             raise GatewayError(ErrorCode.INVALID_CREDENTIAL)
+        return await self._agent_principal(cred, source)
+
+    async def _agent_principal(self, cred: dict[str, Any], source: str | None) -> Principal:
+        """Checks shared by every agent credential type, then the Principal."""
         tenant_id = cred["tenant_id"]
         if cred.get("revoked_at"):
             raise GatewayError(ErrorCode.CREDENTIAL_REVOKED, "The credential has been revoked.")

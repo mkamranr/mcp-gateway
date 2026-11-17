@@ -37,9 +37,9 @@ x-backend: &backend
 services:
   gateway-api:
     <<: *backend
-    # Joins the frontend network so web-ui can reach it. It also needs egress to upstream MCP servers;
+    # web-ui reaches it on the edge network. It also needs egress to upstream MCP servers (frontend network);
     # restrict that with host firewall rules or an egress proxy (spec §9).
-    networks: [backend, frontend]
+    networks: [backend, frontend, edge]
     deploy: { resources: { limits: { cpus: "2", memory: 1g } } }
 
   worker:
@@ -64,7 +64,7 @@ services:
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     restart: unless-stopped
-    networks: [frontend]
+    networks: [edge]
     depends_on:
       gateway-api: { condition: service_healthy }
     logging: *logging
@@ -111,6 +111,11 @@ services:
 networks:
   frontend: {}
   backend: { internal: true }
+  # Only web-ui and gateway-api. A fixed subnet, so the gateway can tell the proxy apart from everything else:
+  # with agent mTLS, MTLS_TRUSTED_PROXIES is this subnet (docs/mtls.md). Change it if it clashes on your host.
+  edge:
+    ipam:
+      config: [{ subnet: "${MGW_EDGE_SUBNET:-172.31.250.0/24}" }]
 
 volumes:
   mongo-data: {}

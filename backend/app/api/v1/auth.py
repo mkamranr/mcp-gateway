@@ -21,6 +21,7 @@ from app.core.crypto import constant_time_equals
 from app.core.errors import ErrorCode, GatewayError
 from app.core.identity import SECURITY, Principal
 from app.models.identity import (
+    AgentCertificateCreate,
     AgentKeyCreate,
     ChangePasswordRequest,
     LoginRequest,
@@ -117,6 +118,19 @@ async def change_password(body: ChangePasswordRequest, p: Principal = Depends(re
                           c: Container = Depends(get_container)) -> Response:
     await c.auth.change_password(p, body.current_password, body.new_password)
     return Response(status_code=204)
+
+
+# ---- agent client certificates (docs/mtls.md) ----
+@router.get("/agent-certificates/status")
+async def agent_certificate_status(_: Principal = Depends(require_user()),
+                                   c: Container = Depends(get_container)) -> dict[str, Any]:
+    return c.identity.certificate_status()
+
+
+@router.post("/agent-certificates", status_code=201)
+async def create_agent_certificate(body: AgentCertificateCreate, p: Principal = Depends(require_user(*SECURITY)),
+                                   c: Container = Depends(get_container)) -> dict[str, Any]:
+    return await c.identity.create_certificate(p, body)
 
 
 # ---- agent keys (spec §16.1) ----

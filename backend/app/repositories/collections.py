@@ -71,6 +71,10 @@ class CredentialRepository(TenantScopedRepository):
         """Privileged: resolve an API key prefix before the tenant is known (authentication)."""
         return await self.col.find_one({"key_prefix": key_prefix})
 
+    async def by_cert_match_global(self, keys: list[str]) -> list[dict[str, Any]]:
+        """Privileged: active certificate credentials matching a presented certificate (authentication)."""
+        return [d async for d in self.col.find({"cert_match": {"$in": keys}, "revoked_at": None}).limit(10)]
+
     async def touch(self, tenant_id: str, cred_id: str, source: str | None) -> None:
         await self.col.update_one(
             {"_id": cred_id, "tenant_id": tenant_id},

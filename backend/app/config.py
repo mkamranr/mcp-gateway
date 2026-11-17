@@ -91,12 +91,18 @@ class Settings(BaseSettings):
     oidc_http_timeout_seconds: float = 10.0
     oidc_allow_insecure_http: bool = False  # http:// issuers; honoured only outside production
 
+    # Agent client certificates (docs/mtls.md). A TLS proxy verifies the certificate and forwards it in a header;
+    # the header is accepted only from MTLS_TRUSTED_PROXIES. Off unless MTLS_CLIENT_CA_FILE is set.
+    mtls_client_ca_file: str | None = None  # PEM bundle of the CAs that issue agent certificates
+    mtls_trusted_proxies: Annotated[list[str], NoDecode] = Field(default_factory=list)  # CIDRs, e.g. 172.30.0.0/24
+    mtls_client_cert_header: str = Field(default="x-client-cert", pattern=r"^[A-Za-z0-9-]{1,64}$")
+
     worker_poll_interval_seconds: float = 2.0
     health_check_interval_seconds: float = 60.0
 
     @field_validator(
         "upstream_host_allowlist", "stdio_executable_allowlist", "cors_allowed_origins", "redis_sentinels",
-        mode="before"
+        "mtls_trusted_proxies", mode="before"
     )
     @classmethod
     def _split_csv(cls, v: object) -> object:
@@ -126,6 +132,16 @@ class Settings(BaseSettings):
             host, _, port = s.rpartition(":")
             if not host or not port.isdigit():
                 raise ValueError(f"REDIS_SENTINELS entries must be host:port, got {s!r}")
+        if self.mtls_client_ca_file:
+            if not self.mtls_trusted_proxies:
+                raise ValueError("MTLS_TRUSTED_PROXIES is required with MTLS_CLIENT_CA_FILE: the certificate header "
+                                 "may only be accepted from the TLS proxy")
+            import ipaddress
+
+            for cidr in self.mtls_trusted_proxies:
+                net = ipaddress.ip_network(cidr, strict=False)  # raises if malformed
+                if net.prefixlen == 0:
+                    raise ValueError("MTLS_TRUSTED_PROXIES must not trust every address")
         if self.data_encryption_key:
             self.encryption_key_bytes()  # raises if malformed
         elif self.app_env == "production":

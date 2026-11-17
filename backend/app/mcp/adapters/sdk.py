@@ -75,7 +75,7 @@ class SdkAdapter:
                     self.net_policy,
                     headers=config.headers,
                     timeout=config.request_timeout_seconds,
-                    verify=config.verify_tls,
+                    verify=config.ssl_context if config.ssl_context is not None else config.verify_tls,
                 )
                 await stack.enter_async_context(http)
                 server: Any = streamable_http_client(config.endpoint, http_client=http)

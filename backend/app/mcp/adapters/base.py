@@ -19,6 +19,7 @@ class ServerConfig:
     connection_timeout_seconds: float = 10
     request_timeout_seconds: float = 30
     verify_tls: bool = True
+    ssl_context: Any = None  # custom CA and/or client certificate (mTLS); overrides verify_tls when set
 
 
 @dataclass

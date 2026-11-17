@@ -36,3 +36,6 @@ Thumbs.db
 .vscode/
 # database backups made by deploy/scripts/backup.sh
 backups/
+
+# mTLS CI job: throwaway PKI (.github/mtls/make-pki.sh)
+.github/mtls/pki/

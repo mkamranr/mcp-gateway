@@ -5,6 +5,7 @@ from __future__ import annotations
 from pymongo import ASCENDING as A
 from pymongo import DESCENDING as D
 from pymongo import IndexModel
+from pymongo.errors import OperationFailure
 
 from app.db import Database
 
@@ -23,7 +24,12 @@ INDEXES: dict[str, list[IndexModel]] = {
     ],
     "agents": [IndexModel([("tenant_id", A), ("status", A)]), IndexModel([("tenant_id", A), ("name", A)], unique=True)],
     "credentials": [
-        IndexModel([("key_prefix", A)], unique=True),
+        # API keys only: certificate credentials have no key prefix.
+        IndexModel([("key_prefix", A)], unique=True, name="key_prefix_unique_v2",
+                   partialFilterExpression={"key_prefix": {"$type": "string"}}),
+        # Certificate credentials: "fp:<sha256>" (a pinned certificate) or "san:<name>" (any trusted certificate
+        # with that subject alternative name).
+        IndexModel([("cert_match", A), ("revoked_at", A)], partialFilterExpression={"cert_match": {"$type": "string"}}),
         IndexModel([("tenant_id", A), ("principal_id", A), ("revoked_at", A)]),
     ],
     "secrets": [IndexModel([("tenant_id", A), ("owner_id", A)])],
@@ -70,6 +76,21 @@ INDEXES: dict[str, list[IndexModel]] = {
 }
 
 
+# Indexes replaced by a differently defined one. Dropped before INDEXES are created (idempotent, and safe when
+# several replicas start at once).
+LEGACY_INDEXES: dict[str, list[str]] = {
+    "credentials": ["key_prefix_1"],  # unique on every document; now partial, so certificates need no prefix
+}
+
+
 async def ensure_indexes(db: Database) -> None:
+    for collection, names in LEGACY_INDEXES.items():
+        existing = {ix["name"] async for ix in await db[collection].list_indexes()}
+        for name in names:
+            if name in existing:
+                try:
+                    await db[collection].drop_index(name)
+                except OperationFailure:
+                    pass  # another replica dropped it first
     for collection, models in INDEXES.items():
         await db[collection].create_indexes(models)

@@ -8,12 +8,14 @@ import socket
 from typing import Any
 
 from app.config import Settings
+from app.core.client_certs import CertificateError, describe, load_certificate
 from app.core.crypto import generate_api_key, hash_password, random_token
 from app.core.errors import ErrorCode, GatewayError, denied, not_found
 from app.core.identity import Principal, Role
 from app.core.ids import ensure_aware, utcnow
 from app.core.lease import Lease
 from app.models.identity import (
+    AgentCertificateCreate,
     AgentCreate,
     AgentKeyCreate,
     AgentUpdate,
@@ -247,6 +249,52 @@ class IdentityService:
         )
         return {**credential_to_api(cred), "secret": key.secret}  # the only time the secret is returned
 
+    async def create_certificate(self, p: Principal, data: AgentCertificateCreate) -> dict[str, Any]:
+        """Register a client certificate credential (docs/mtls.md). Nothing secret is stored: the private key
+        never leaves the agent, and the TLS proxy checks that the agent holds it."""
+        verifier = self.auth.cert_verifier
+        if verifier is None:
+            raise GatewayError(ErrorCode.VALIDATION_FAILED, "Client certificate authentication isn't enabled on this "
+                                                            "gateway (MTLS_CLIENT_CA_FILE).")
+        agent = await self.get_agent(p, data.agent_id)
+        if agent.get("status") != "active":
+            raise GatewayError(ErrorCode.CONFLICT, "Credentials can only be issued to active agents.")
+        expires = ensure_aware(data.expires_at)
+        if expires and expires <= utcnow():
+            raise GatewayError(ErrorCode.VALIDATION_FAILED, "Expiry must be in the future.")
+        info = None
+        if data.certificate_pem:
+            try:
+                info = verifier.verify(load_certificate(data.certificate_pem))
+            except CertificateError as exc:
+                raise GatewayError(ErrorCode.VALIDATION_FAILED, str(exc)) from None
+            match = f"fp:{info.fingerprint_sha256}"
+            expires = min(expires, info.not_after) if expires else info.not_after
+        else:
+            match = f"san:{data.subject_name}"
+        if await self.repos.credentials.by_cert_match_global([match]):
+            raise GatewayError(ErrorCode.CONFLICT, "An active credential already uses this certificate or subject "
+                                                   "name.")
+        cred = await self.repos.credentials.insert(p.tenant_id, {
+            "type": "client_certificate", "name": data.name, "principal_type": "agent", "principal_id": agent["_id"],
+            "cert_match": match, "subject_name": data.subject_name,
+            "certificate": info.to_api() if info else None,
+            "scopes": list(data.scopes), "expires_at": expires, "revoked_at": None, "last_used_at": None,
+            "created_by": p.principal_id,
+        })
+        await self.audit.record(p.tenant_id, "credential.created", principal=p, resource={
+            "agent_id": agent["_id"], "credential_id": cred["_id"], "credential_type": "client_certificate"},
+            metadata={"match": "fingerprint" if info else "subject_name",
+                      "fingerprint_sha256": info.fingerprint_sha256 if info else None,
+                      "subject_name": data.subject_name})
+        return credential_to_api(cred)
+
+    def certificate_status(self) -> dict[str, Any]:
+        """Whether agents can use client certificates here, and which CAs may issue them (public information)."""
+        verifier = self.auth.cert_verifier
+        return {"enabled": verifier is not None,
+                "trusted_cas": [describe(ca).to_api() for ca in verifier.cas] if verifier else []}
+
     async def list_keys(self, p: Principal, agent_id: str | None = None, **kw: Any) -> Any:
         q: dict[str, Any] = {"principal_type": "agent"}
         if agent_id:
@@ -257,6 +305,10 @@ class IdentityService:
         cred = await self.repos.credentials.get(p.tenant_id, cred_id)
         if not cred or cred.get("revoked_at"):
             raise not_found("Credential")
+        if cred.get("type") == "client_certificate":
+            raise GatewayError(ErrorCode.VALIDATION_FAILED, "Certificate credentials aren't rotated here. Match by "
+                               "subject name to renew certificates freely, or add the new certificate and revoke "
+                               "the old one.")
         new = await self.create_key(
             p, AgentKeyCreate(agent_id=cred["principal_id"], name=cred.get("name", "default"),
                               scopes=cred.get("scopes", []), expires_at=cred.get("expires_at")),

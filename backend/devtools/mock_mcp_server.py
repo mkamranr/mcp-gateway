@@ -153,6 +153,9 @@ def main() -> None:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--stdio", action="store_true")
     parser.add_argument("--token", default=None, help="Require this bearer token")
+    parser.add_argument("--tls-cert", default=None, help="Serve HTTPS with this certificate (PEM)")
+    parser.add_argument("--tls-key", default=None, help="Private key for --tls-cert (PEM)")
+    parser.add_argument("--client-ca", default=None, help="Require client certificates issued by this CA (mTLS)")
     ns = parser.parse_args()
     STATE["expected_token"] = ns.token
     if ns.stdio:
@@ -166,9 +169,16 @@ def main() -> None:
 
         asyncio.run(run())
         return
+    import ssl
+
     import uvicorn
 
-    uvicorn.run(build_http_app(), host=ns.host, port=ns.port, log_level="warning")
+    tls: dict[str, object] = {}
+    if ns.tls_cert:
+        tls = {"ssl_certfile": ns.tls_cert, "ssl_keyfile": ns.tls_key}
+        if ns.client_ca:
+            tls |= {"ssl_ca_certs": ns.client_ca, "ssl_cert_reqs": ssl.CERT_REQUIRED}
+    uvicorn.run(build_http_app(), host=ns.host, port=ns.port, log_level="warning", **tls)  # type: ignore[arg-type]
 
 
 if __name__ == "__main__":

@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 
 from app.core.identity import TENANT_ROLES
 from app.models.registry import Strict
@@ -106,6 +106,32 @@ class AgentKeyCreate(Strict):
     expires_at: datetime | None = None
 
 
+AgentScope = Literal["tools:list", "tools:invoke", "approvals:read"]
+# A SAN an agent certificate must carry: a URI (e.g. a SPIFFE ID) or a DNS name.
+SUBJECT_NAME_PATTERN = r"^([a-z][a-z0-9+.-]*://[^\s]{1,500}|[A-Za-z0-9*]([A-Za-z0-9-]{0,62})(\.[A-Za-z0-9-]{1,63})+)$"
+
+
+class AgentCertificateCreate(Strict):
+    """A client certificate credential. Either ``certificate_pem`` (pin exactly this certificate) or
+    ``subject_name`` (any certificate from a trusted CA carrying this SAN, so certificates can be renewed without
+    a console change)."""
+
+    agent_id: str
+    name: str = Field(default="certificate", min_length=1, max_length=100)
+    scopes: list[AgentScope] = Field(
+        default_factory=lambda: ["tools:list", "tools:invoke", "approvals:read"]  # type: ignore[arg-type]
+    )
+    expires_at: datetime | None = None
+    certificate_pem: str | None = Field(default=None, max_length=16_384)
+    subject_name: str | None = Field(default=None, pattern=SUBJECT_NAME_PATTERN, max_length=512)
+
+    @model_validator(mode="after")
+    def _one_matcher(self) -> AgentCertificateCreate:
+        if bool(self.certificate_pem) == bool(self.subject_name):
+            raise ValueError("give exactly one of certificate_pem or subject_name")
+        return self
+
+
 class RevokeRequest(Strict):
     reason: str = Field(default="", max_length=500)
 
@@ -122,7 +148,9 @@ def credential_to_api(doc: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": doc["_id"], "tenant_id": doc["tenant_id"], "name": doc.get("name"),
         "principal_type": doc["principal_type"], "principal_id": doc["principal_id"],
-        "key_prefix": doc["key_prefix"], "scopes": doc.get("scopes", []), "expires_at": doc.get("expires_at"),
+        "type": doc.get("type", "api_key"), "key_prefix": doc.get("key_prefix"),
+        "certificate": doc.get("certificate"), "subject_name": doc.get("subject_name"),
+        "scopes": doc.get("scopes", []), "expires_at": doc.get("expires_at"),
         "revoked_at": doc.get("revoked_at"), "revoked_by": doc.get("revoked_by"),
         "last_used_at": doc.get("last_used_at"), "last_used_source": doc.get("last_used_source"),
         "created_at": doc.get("created_at"), "created_by": doc.get("created_by"),
