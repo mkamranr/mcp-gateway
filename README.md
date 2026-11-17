@@ -201,7 +201,7 @@ it starts serving traffic. See [operations](docs/operations.md).
 |---|---|
 | Gateway API and worker | Python 3.12, FastAPI, official MCP SDK, Pydantic, PyMongo (async), redis-py |
 | Data | MongoDB 7 (state and audit), Redis 7 (sessions, quotas, job queue, leases) |
-| Admin console | React 18, TypeScript, Vite, TanStack Query. All assets bundled, no CDN |
+| Admin console | React 19, TypeScript 7, Vite 8, TanStack Query. All assets bundled, no CDN |
 | Delivery | Docker Compose, nginx (unprivileged), read-only containers with all capabilities dropped |
 
 ## Repository layout

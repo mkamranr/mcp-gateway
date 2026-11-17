@@ -1,4 +1,4 @@
-# MCP-Gateway developer tasks. Requires uv (Python 3.12) and Node 20+. Docker is only needed for compose/release.
+# MCP-Gateway developer tasks. Requires uv (Python 3.12) and Node 22.12+ (Vite 8). Docker is only needed for compose/release.
 .PHONY: help install dev dev-ui test test-fast lint fmt typecheck build check secrets up down logs release sbom
 
 help:

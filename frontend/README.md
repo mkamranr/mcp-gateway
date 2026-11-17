@@ -1,6 +1,6 @@
 # MCP-Gateway Admin Console
 
-React 18 + TypeScript + Vite admin console for MCP-Gateway. It talks to the FastAPI backend through
+React 19 + TypeScript 7 + Vite 8 admin console for MCP-Gateway. It talks to the FastAPI backend through
 `/api/v1` using the session cookie plus a CSRF header. Every authorization, validation, quota, approval and
 audit rule is enforced **server-side**. The UI hides actions a role can't perform as a convenience only.
 

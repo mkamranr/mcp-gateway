@@ -5,7 +5,7 @@ downloads nothing at runtime. Only **building** needs internet access, which hap
 
 ## 1. On the connected build host
 
-Requirements: Docker, git, uv, Node 20 (for the SBOM step).
+Requirements: Docker, git, uv, Node 22.12+ (for the SBOM step).
 
 ```bash
 git clone <repo> mcp-gateway && cd mcp-gateway

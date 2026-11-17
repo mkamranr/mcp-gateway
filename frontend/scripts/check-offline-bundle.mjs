@@ -10,7 +10,7 @@ const dist = process.argv[2] || 'dist'
 const ALLOWED_HOSTS = new Set([
   'www.w3.org', // SVG / XHTML / MathML / XLink namespaces
   'localhost', // URL parsing base in libraries
-  'fb.me', 'reactjs.org', 'reactrouter.com', 'github.com', // dev/error message links inside libraries
+  'fb.me', 'reactjs.org', 'react.dev', 'reactrouter.com', 'github.com', // dev/error message links inside libraries
 ])
 const ALLOWED_SUFFIXES = ['.example'] // RFC 2606 placeholders shown in form hints
 
