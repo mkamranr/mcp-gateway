@@ -1,0 +1,41 @@
+{{- $full := include "mgw.fullname" . }}
+# helm test: the console, the API through the web UI, and the API's dependencies. Uses the backend image, so it
+# works offline.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ $full }}-test
+  labels: {{- include "mgw.labels" . | nindent 4 }}
+    app.kubernetes.io/component: test
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  {{- include "mgw.imagePullSecrets" . | nindent 2 }}
+  securityContext: {{- include "mgw.podSecurity" (list 10001 10001) | nindent 4 }}
+  containers:
+    - name: test
+      image: {{ include "mgw.image" (list . .Values.image.backend) }}
+      imagePullPolicy: {{ .Values.image.pullPolicy }}
+      securityContext: {{- include "mgw.containerSecurity" . | nindent 8 }}
+      command: ["python", "-c"]
+      args:
+        - |
+          import json, sys, urllib.request
+          web = "http://{{ $full }}-web:{{ .Values.web.service.port }}"
+          def get(url):
+              with urllib.request.urlopen(url, timeout=10) as r:
+                  return r.status, r.read()
+          status, body = get(web + "/healthz")
+          assert status == 200, ("console", status)
+          status, body = get(web + "/health/ready")
+          ready = json.loads(body)
+          assert status == 200 and ready["status"] == "ready", ready
+          status, body = get(web + "/")
+          assert status == 200 and b"<div id=\"root\">" in body, "console page"
+          print("console, API, MongoDB and Redis reachable:", ready["checks"])
+      resources:
+        requests: { cpu: 10m, memory: 64Mi }
+        limits: { cpu: 200m, memory: 128Mi }

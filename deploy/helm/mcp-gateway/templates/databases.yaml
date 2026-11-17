@@ -1,0 +1,186 @@
+{{- $full := include "mgw.fullname" . }}
+{{- if .Values.mongodb.enabled }}
+# Bundled MongoDB: one instance with authentication, for evaluations and small installations.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $full }}-mongodb
+  labels: {{- include "mgw.labels" . | nindent 4 }}
+    app.kubernetes.io/component: mongodb
+spec:
+  serviceName: {{ $full }}-mongodb
+  replicas: 1
+  selector:
+    matchLabels: {{- include "mgw.selector" (list . "mongodb") | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "mgw.labels" . | nindent 8 }}
+        app.kubernetes.io/component: mongodb
+    spec:
+      automountServiceAccountToken: false
+      {{- include "mgw.imagePullSecrets" . | nindent 6 }}
+      # The image's mongodb user; the entrypoint runs without switching users when started as non-root.
+      securityContext: {{- include "mgw.podSecurity" (list 999 999) | nindent 8 }}
+      {{- with .Values.mongodb.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.mongodb.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.mongodb.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: mongodb
+          image: {{ include "mgw.image" (list . .Values.mongodb.image) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["--auth", "--bind_ip_all", "--quiet"]
+          env:
+            - { name: MONGO_INITDB_ROOT_USERNAME, value: mgw_root }
+            - { name: MONGO_INITDB_ROOT_PASSWORD_FILE, value: /run/secrets/mongodb/mongo_root_password }
+            - { name: HOME, value: /tmp }
+          securityContext: {{- include "mgw.containerSecurity" . | nindent 12 }}
+          ports:
+            - { name: mongodb, containerPort: 27017, protocol: TCP }
+          startupProbe:
+            tcpSocket: { port: mongodb }
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            exec: { command: ["mongosh", "--quiet", "--norc", "--eval", "db.adminCommand('ping').ok"] }
+            periodSeconds: 15
+            timeoutSeconds: 10
+          livenessProbe:
+            tcpSocket: { port: mongodb }
+            periodSeconds: 20
+            failureThreshold: 6
+          volumeMounts:
+            - { name: data, mountPath: /data/db }
+            - { name: configdb, mountPath: /data/configdb }
+            - { name: tmp, mountPath: /tmp }
+            - { name: secret, mountPath: /run/secrets/mongodb, readOnly: true }
+          resources: {{- toYaml .Values.mongodb.resources | nindent 12 }}
+      volumes:
+        - name: configdb
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+        - name: secret
+          secret:
+            secretName: {{ include "mgw.secretName" . }}
+            defaultMode: 0440
+            items: [{ key: mongo_root_password, path: mongo_root_password }]
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        {{- with .Values.mongodb.persistence.storageClass }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources: { requests: { storage: {{ .Values.mongodb.persistence.size }} } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $full }}-mongodb
+  labels: {{- include "mgw.labels" . | nindent 4 }}
+    app.kubernetes.io/component: mongodb
+spec:
+  type: ClusterIP
+  selector: {{- include "mgw.selector" (list . "mongodb") | nindent 4 }}
+  ports:
+    - { name: mongodb, port: 27017, targetPort: mongodb, protocol: TCP }
+{{- end }}
+{{- if .Values.redis.enabled }}
+---
+# Bundled Redis: one instance with a password and AOF persistence (quota windows and the job queue survive
+# restarts). noeviction: a full Redis refuses writes rather than silently dropping quota counters.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $full }}-redis
+  labels: {{- include "mgw.labels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
+spec:
+  serviceName: {{ $full }}-redis
+  replicas: 1
+  selector:
+    matchLabels: {{- include "mgw.selector" (list . "redis") | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "mgw.labels" . | nindent 8 }}
+        app.kubernetes.io/component: redis
+    spec:
+      automountServiceAccountToken: false
+      {{- include "mgw.imagePullSecrets" . | nindent 6 }}
+      # The image's redis user (uid 999, gid 1000).
+      securityContext: {{- include "mgw.podSecurity" (list 999 1000) | nindent 8 }}
+      {{- with .Values.redis.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.redis.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.redis.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: redis
+          image: {{ include "mgw.image" (list . .Values.redis.image) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # The password goes into a config file in memory, not onto the command line.
+          command: ["sh", "-c"]
+          args:
+            - >-
+              umask 077 &&
+              printf 'requirepass "%s"\n' "$(cat /run/secrets/redis/redis_password)" > /tmp/redis.conf &&
+              exec redis-server /tmp/redis.conf --dir /data --appendonly yes --protected-mode yes
+              --maxmemory {{ .Values.redis.maxmemory }} --maxmemory-policy noeviction
+          securityContext: {{- include "mgw.containerSecurity" . | nindent 12 }}
+          ports:
+            - { name: redis, containerPort: 6379, protocol: TCP }
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "REDISCLI_AUTH=\"$(cat /run/secrets/redis/redis_password)\" redis-cli ping | grep -q PONG"]
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            tcpSocket: { port: redis }
+            periodSeconds: 20
+            failureThreshold: 6
+          volumeMounts:
+            - { name: data, mountPath: /data }
+            - { name: tmp, mountPath: /tmp }
+            - { name: secret, mountPath: /run/secrets/redis, readOnly: true }
+          resources: {{- toYaml .Values.redis.resources | nindent 12 }}
+      volumes:
+        - name: tmp
+          emptyDir: { medium: Memory, sizeLimit: 1Mi }
+        - name: secret
+          secret:
+            secretName: {{ include "mgw.secretName" . }}
+            defaultMode: 0440
+            items: [{ key: redis_password, path: redis_password }]
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        {{- with .Values.redis.persistence.storageClass }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources: { requests: { storage: {{ .Values.redis.persistence.size }} } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $full }}-redis
+  labels: {{- include "mgw.labels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
+spec:
+  type: ClusterIP
+  selector: {{- include "mgw.selector" (list . "redis") | nindent 4 }}
+  ports:
+    - { name: redis, port: 6379, targetPort: redis, protocol: TCP }
+{{- end }}

@@ -185,7 +185,7 @@ Tools appear as `<server>__<tool>`, for example `hr__get_attendance_summary`. Se
 
 ## Production deployment
 
-Docker Compose, with every image pinned and loadable from an offline bundle.
+Docker Compose or Kubernetes (Helm), with every image pinned and loadable from an offline bundle.
 
 ```bash
 ./deploy/scripts/generate-secrets.sh     # once: writes ./secrets/
@@ -198,6 +198,7 @@ docker compose up -d --wait
 | **Single host** | `docker-compose.yml`. Only the web UI publishes a port; MongoDB and Redis stay on an internal network. |
 | **Several replicas** | add `-f docker-compose.ha.yml`: 2 API replicas and 2 workers, scalable with `--scale`. |
 | **Multi-host HA** | MongoDB replica set and Redis Sentinel behind a load balancer. See [high availability](docs/high-availability.md). |
+| **Kubernetes** | Helm chart in `deploy/helm/mcp-gateway`: restricted Pod Security, network policies, optional ingress, agent mTLS and bundled or external databases. See [Kubernetes](docs/kubernetes.md). |
 | **Air-gapped** | build an image bundle with checksums on a connected machine and load it offline. See [air-gapped installation](docs/air-gapped-installation.md). |
 
 Backups: `deploy/scripts/backup.sh` and `restore.sh`. A restore verifies that every stored secret decrypts before
@@ -220,7 +221,7 @@ it starts serving traffic. See [operations](docs/operations.md).
 | `backend/tests` | unit, integration, contract (real MCP SDK client) and security suites |
 | `backend/devtools` | mock MCP server, mock OIDC provider, Docker-free dev stack |
 | `frontend/src` | admin console: `app` (shell, auth, routing), `features/*` (one folder per page), `components`, `services` |
-| `deploy` | secret generation, backup and restore, offline bundle, SBOM, policy-as-code CLI, demo agent |
+| `deploy` | Helm chart, secret generation, backup and restore, offline bundle, SBOM, policy-as-code CLI, demo agent |
 | `docs` | architecture, security and threat model, API, deployment, operations and feature guides |
 
 ## Quality
@@ -245,6 +246,7 @@ or CI.
 | **mTLS** | through the real nginx: agents served by client certificate over REST and MCP; no certificate, a foreign CA, an unregistered certificate, a spoofed certificate header and a revoked credential are all refused; an upstream that requires a client certificate is reached only with one |
 | **LDAP** | against a real OpenLDAP server: LDAPS and StartTLS, refusal of a host name not in the certificate, a foreign CA and clear text; group search and `memberOf` roles; unmapped users, wrong passwords and filter injection refused; removing a user from a group removes access; local administrators still sign in when the directory is down |
 | **Agent OAuth** | against a real Keycloak: client-credentials tokens accepted over REST and MCP and audited against the OAuth credential; tokens for another client, without the gateway's audience, ID tokens, tampered tokens and tokens missing a required scope refused; revocation immediate |
+| **Kubernetes** | the Helm chart on kind, in a namespace enforcing the restricted Pod Security Standard: `helm test`, the smoke and SCIM checks through the web UI, the agent mTLS listener, network policies blocking an unrelated pod, a rolling restart without failed requests, and a generated Secret kept across upgrade and uninstall |
 
 A manual release workflow builds the air-gap bundle, deletes every image, then loads and starts the bundle with
 egress blocked, as an air-gapped host would.
@@ -255,7 +257,7 @@ egress blocked, as an air-gapped host would.
 |---|---|
 | Design | [Architecture](docs/architecture.md) · [Security model](docs/security-model.md) · [Threat model](docs/threat-model.md) |
 | Integration | [API reference](docs/api-reference.md) · [MCP client configuration](docs/mcp-client-configuration.md) |
-| Deployment | [Deployment](docs/deployment.md) · [Air-gapped installation](docs/air-gapped-installation.md) · [High availability](docs/high-availability.md) |
+| Deployment | [Deployment](docs/deployment.md) · [Kubernetes](docs/kubernetes.md) · [Air-gapped installation](docs/air-gapped-installation.md) · [High availability](docs/high-availability.md) |
 | Features | [Approvals and delegation](docs/approvals.md) · [Single sign-on](docs/sso.md) · [LDAP / Active Directory](docs/ldap.md) · [SCIM provisioning](docs/scim.md) · [Agent OAuth](docs/agent-oauth.md) · [Mutual TLS](docs/mtls.md) · [SIEM forwarding](docs/siem.md) · [Policy as code](docs/policy-as-code.md) |
 | Running it | [Operations and runbooks](docs/operations.md) |
 

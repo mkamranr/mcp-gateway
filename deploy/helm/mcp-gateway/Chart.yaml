@@ -1,0 +1,7 @@
+apiVersion: v2
+name: mcp-gateway
+description: Secure MCP gateway for AI agents (API, worker, admin console), with optional bundled MongoDB and Redis
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords: [mcp, gateway, ai-agents, security]

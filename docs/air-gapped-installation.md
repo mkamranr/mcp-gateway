@@ -51,7 +51,8 @@ checklist in [deployment.md](deployment.md#first-install-verification-checklist)
 
 Push the loaded images to your registry, then set `MGW_BACKEND_IMAGE` / `MGW_WEB_IMAGE` in `.env` and
 change the `mongo`/`redis` image references to your registry, preferably by digest
-(`registry.internal/mongo@sha256:…`).
+(`registry.internal/mongo@sha256:…`). On Kubernetes, set `global.imageRegistry` in the Helm chart
+([kubernetes.md](kubernetes.md)); it uses only these four images, `helm test` included.
 
 ## Updates
 

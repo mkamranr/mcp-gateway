@@ -1,0 +1,69 @@
+{{- $full := include "mgw.fullname" . }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $full }}-worker
+  labels: {{- include "mgw.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  replicas: {{ .Values.worker.replicaCount }}
+  selector:
+    matchLabels: {{- include "mgw.selector" (list . "worker") | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "mgw.labels" . | nindent 8 }}
+        app.kubernetes.io/component: worker
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.worker.podAnnotations }}{{ toYaml . | nindent 8 }}{{- end }}
+    spec:
+      serviceAccountName: {{ include "mgw.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      {{- include "mgw.imagePullSecrets" . | nindent 6 }}
+      securityContext: {{- include "mgw.podSecurity" (list 10001 10001) | nindent 8 }}
+      {{- include "mgw.affinity" (list . "worker" .Values.worker.affinity) | nindent 6 }}
+      {{- with .Values.worker.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.worker.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      # Give calls in progress time to finish before the pod stops.
+      terminationGracePeriodSeconds: 120
+      containers:
+        - name: worker
+          image: {{ include "mgw.image" (list . .Values.image.backend) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["python", "-m", "app.workers.main"]
+          securityContext: {{- include "mgw.containerSecurity" . | nindent 12 }}
+          envFrom:
+            - configMapRef: { name: {{ $full }}-config }
+          env:
+            {{- include "mgw.backendEnv" . | nindent 12 }}
+            {{- with .Values.worker.extraEnv }}{{ toYaml . | nindent 12 }}{{- end }}
+          volumeMounts:
+            {{- include "mgw.backendMounts" . | nindent 12 }}
+            {{- with .Values.worker.extraVolumeMounts }}{{ toYaml . | nindent 12 }}{{- end }}
+          # Healthy while this pod's worker has a recent heartbeat in Redis (it beats under the pod name).
+          livenessProbe:
+            exec: { command: ["python", "-m", "app.workers.healthcheck"] }
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+          resources: {{- toYaml .Values.worker.resources | nindent 12 }}
+      volumes:
+        {{- include "mgw.backendVolumes" . | nindent 8 }}
+        {{- with .Values.worker.extraVolumes }}{{ toYaml . | nindent 8 }}{{- end }}
+{{- if .Values.worker.podDisruptionBudget.enabled }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ $full }}-worker
+  labels: {{- include "mgw.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.worker.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels: {{- include "mgw.selector" (list . "worker") | nindent 6 }}
+{{- end }}

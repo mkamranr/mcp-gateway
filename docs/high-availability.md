@@ -50,7 +50,7 @@ a tool invocation) once a replica received it, so a call can't run twice.
 to finish (`stop_grace_period`). Workers get 60 seconds to finish the approved call they are running; a call still
 running after that is picked up again by another worker.
 
-This is what CI verifies on every push (job *Multi-replica Compose*):
+This is what CI verifies when the integration jobs are run (job *Multi-replica Compose*):
 
 1. Two API replicas boot together on empty volumes; neither restarts.
 2. One session works across replicas; both workers report in.

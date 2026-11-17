@@ -1,0 +1,80 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- $ctx := . }}
+{{- $backend := list "api" "worker" }}
+{{- $dbs := list }}
+{{- if .Values.mongodb.enabled }}{{- $dbs = append $dbs (list "mongodb" 27017) }}{{- end }}
+{{- if .Values.redis.enabled }}{{- $dbs = append $dbs (list "redis" 6379) }}{{- end }}
+{{- range $dbs }}
+# {{ index . 0 }}: only the API and the worker.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "mgw.fullname" $ctx }}-{{ index . 0 }}
+  labels: {{- include "mgw.labels" $ctx | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: {{- include "mgw.selector" (list $ctx (index . 0)) | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        {{- range $backend }}
+        - podSelector:
+            matchLabels: {{- include "mgw.selector" (list $ctx .) | nindent 14 }}
+        {{- end }}
+      ports:
+        - { port: {{ index . 1 }}, protocol: TCP }
+---
+{{- end }}
+# API: only the web UI (and helm test). With agent mTLS this is what keeps every other pod from presenting a
+# forged client certificate header.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "mgw.fullname" . }}-api
+  labels: {{- include "mgw.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: {{- include "mgw.selector" (list . "api") | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: {{- include "mgw.selector" (list . "web") | nindent 14 }}
+        - podSelector:
+            matchLabels: {{- include "mgw.selector" (list . "test") | nindent 14 }}
+      ports:
+        - { port: 8080, protocol: TCP }
+---
+# Worker: accepts no connections.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "mgw.fullname" . }}-worker
+  labels: {{- include "mgw.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: {{- include "mgw.selector" (list . "worker") | nindent 6 }}
+  policyTypes: [Ingress]
+---
+# Web UI: the console and agent endpoints.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "mgw.fullname" . }}-web
+  labels: {{- include "mgw.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: {{- include "mgw.selector" (list . "web") | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - ports:
+        - { port: 8080, protocol: TCP }
+        {{- if .Values.mtls.enabled }}
+        - { port: 8443, protocol: TCP }
+        {{- end }}
+      {{- with .Values.networkPolicy.webIngressFrom }}
+      from: {{- toYaml . | nindent 8 }}
+        - podSelector:
+            matchLabels: {{- include "mgw.selector" (list $ctx "test") | nindent 14 }}
+      {{- end }}
+{{- end }}

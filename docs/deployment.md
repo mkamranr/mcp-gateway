@@ -4,8 +4,9 @@ Single-host deployment of five containers: `web-ui` (nginx), `gateway-api`, `wor
 To run several API replicas and workers, or to spread the gateway over several hosts with a MongoDB replica set
 and Redis Sentinel, see [high availability](high-availability.md).
 For an air-gapped site, build the bundle on a connected host first ([air-gapped-installation.md](air-gapped-installation.md)).
+For Kubernetes, use the Helm chart ([kubernetes.md](kubernetes.md)).
 
-> Status: CI (`compose-smoke` job) builds the images and starts this Compose stack on every push with all
+> Status: CI (`compose-smoke` job) builds the images and starts this Compose stack (when the integration jobs are run) with all
 > container egress to public addresses blocked, then checks health, published ports, MongoDB
 > authentication, sign-in, CSRF and security headers. Still run the verification checklist below on your
 > first install: CI does not cover your TLS setup, firewall or upstream servers.

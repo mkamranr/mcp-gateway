@@ -1,0 +1,155 @@
+# MCP-Gateway Helm chart. See docs/kubernetes.md.
+#
+# Every image the chart uses is in the offline bundle (deploy/offline): the backend (API, worker, helm test),
+# the web UI, MongoDB and Redis. Push them to your registry and set global.imageRegistry.
+
+global:
+  # Prefix for every image, e.g. registry.corp.example/mcp-gateway. Empty: the repositories below as they are.
+  imageRegistry: ""
+  imagePullSecrets: []   # [{name: regcred}]
+
+image:
+  backend: { repository: mcp-gateway/backend, tag: "" }   # tag "" = the chart's appVersion
+  web: { repository: mcp-gateway/web-ui, tag: "" }
+  pullPolicy: IfNotPresent
+
+# Public URL users and agents use (the ingress or load balancer). Builds the MCP endpoint URL shown in the
+# console, the SCIM base URL and the OAuth resource URI. Default: https://<ingress.host> when the ingress is on.
+publicBaseUrl: ""
+
+# Non-secret settings, passed to the API and the worker as environment variables (see .env.example for the
+# full list). APP_ENV is always production; PUBLIC_BASE_URL comes from publicBaseUrl above.
+config:
+  LOG_LEVEL: INFO
+  MONGODB_DATABASE: mcp_gateway
+  BOOTSTRAP_ADMIN_USERNAME: admin
+  BOOTSTRAP_TENANT_SLUG: default
+  COOKIE_SECURE: "true"   # keep true behind HTTPS
+  AUDIT_REQUIRED_FOR_EXECUTION: "true"
+  ALLOW_PRIVATE_UPSTREAM_NETWORKS: "false"
+
+# ---------------------------------------------------------------------------------------------- secrets
+# Keys: session_secret, data_encryption_key, api_key_hash_pepper, bootstrap_admin_password, mongodb_uri,
+# redis_url, plus mongo_root_password and redis_password for the bundled databases.
+secrets:
+  # Recommended: a Secret you create beforehand (deploy/helm/create-secret.sh), kept in your secret store.
+  existingSecret: ""
+  # Or let the chart generate one at the first install. It is reused on upgrades and kept on uninstall, but it
+  # can't work with tools that render without cluster access (helm template, Argo CD, Flux): they would
+  # generate new keys on every render, and data encrypted with the old key becomes unreadable. Use
+  # existingSecret there.
+  generate: false
+
+# ---------------------------------------------------------------------------------------------- API
+api:
+  replicaCount: 2
+  resources:
+    requests: { cpu: 250m, memory: 384Mi }
+    limits: { cpu: "2", memory: 1Gi }
+  podDisruptionBudget: { enabled: true, minAvailable: 1 }
+  autoscaling: { enabled: false, minReplicas: 2, maxReplicas: 6, targetCPUUtilizationPercentage: 70 }
+  extraEnv: []          # [{name: OIDC_CA_BUNDLE_FILE, value: /etc/mgw/idp-ca/ca.pem}]
+  extraVolumes: []
+  extraVolumeMounts: []
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  topologySpreadConstraints: []
+  podAnnotations: {}
+
+# ---------------------------------------------------------------------------------------------- worker
+# Runs approved calls, health checks, retention and SIEM forwarding. Several replicas are safe.
+worker:
+  replicaCount: 1
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { cpu: "1", memory: 512Mi }
+  podDisruptionBudget: { enabled: false, minAvailable: 1 }
+  extraEnv: []
+  extraVolumes: []
+  extraVolumeMounts: []
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podAnnotations: {}
+
+# ---------------------------------------------------------------------------------------------- web UI (nginx)
+# Serves the console and proxies /api, /mcp and /.well-known to the API.
+web:
+  replicaCount: 2
+  resources:
+    requests: { cpu: 50m, memory: 64Mi }
+    limits: { cpu: 500m, memory: 128Mi }
+  podDisruptionBudget: { enabled: true, minAvailable: 1 }
+  service: { type: ClusterIP, port: 80, annotations: {} }
+  # Addresses of the proxies in front of the web UI (ingress controller pods, load balancer). Their
+  # X-Forwarded-For is trusted, so the gateway sees the real client address (login throttling, audit).
+  # Empty: the client address is the proxy's.
+  realIpFrom: []        # e.g. [10.244.0.0/16]
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podAnnotations: {}
+
+ingress:
+  enabled: false
+  className: ""
+  host: mcp-gateway.example.com
+  # For ingress-nginx, also stream MCP responses without buffering and allow long calls:
+  #   nginx.ingress.kubernetes.io/proxy-buffering: "off"
+  #   nginx.ingress.kubernetes.io/proxy-read-timeout: "330"
+  #   nginx.ingress.kubernetes.io/proxy-body-size: 2m
+  annotations: {}
+  tls: { enabled: true, secretName: mcp-gateway-tls }
+
+# ---------------------------------------------------------------------------------------------- agent mTLS
+# Agents authenticate with client certificates (docs/mtls.md). The web UI gets a TLS listener on 8443 that
+# requires a certificate from the agent CA; expose it with a TCP (L4) load balancer, never through a TLS-
+# terminating ingress. The API accepts the forwarded certificate only from trustedProxies.
+mtls:
+  enabled: false
+  # Secret with server.crt, server.key (the listener's own certificate) and agent-ca.pem.
+  existingSecret: ""
+  # Pod network range of the web UI pods (e.g. the cluster pod CIDR). Required. The NetworkPolicy below makes
+  # sure only web UI pods can reach the API, so no other pod can present a forged certificate header.
+  trustedProxies: ""
+  service: { type: LoadBalancer, port: 8443, annotations: {} }
+
+# ---------------------------------------------------------------------------------------------- network policies
+# Ingress rules only: MongoDB and Redis accept the API and worker; the API accepts the web UI (and helm test).
+# Egress is left open, because the API and worker reach your upstream MCP servers and identity provider.
+networkPolicy:
+  enabled: true
+  # Extra sources allowed to reach the web UI. Empty: anyone (the ingress controller, load balancers).
+  webIngressFrom: []    # [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: ingress-nginx}}}]
+
+# ---------------------------------------------------------------------------------------------- bundled databases
+# Single instances for evaluations and small installations. For production, prefer a MongoDB replica set and
+# Redis with Sentinel (docs/high-availability.md): turn these off and put mongodb_uri and redis_url in the Secret.
+mongodb:
+  enabled: true
+  image: { repository: mongo, tag: "7.0.14" }
+  persistence: { size: 20Gi, storageClass: "" }
+  resources:
+    requests: { cpu: 250m, memory: 512Mi }
+    limits: { cpu: "2", memory: 2Gi }
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+redis:
+  enabled: true
+  image: { repository: redis, tag: "7.4.1-alpine" }
+  persistence: { size: 2Gi, storageClass: "" }
+  maxmemory: 512mb
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits: { cpu: "1", memory: 768Mi }
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}

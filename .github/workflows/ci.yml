@@ -2,7 +2,7 @@ name: CI
 
 # Actions minutes: pushes and pull requests run only the fast jobs (lint, types, unit and security tests, build,
 # dependency scan; about 6 billed minutes). The Docker-based integration jobs (about 20 more) run when started by
-# hand (Actions -> CI -> Run workflow, or `gh workflow run ci.yml --ref <branch>`).
+# hand (Actions -> CI -> Run workflow, or `gh workflow run ci.yml --ref <branch> [-f job=<name>]`).
 # Documentation-only changes don't trigger CI.
 on:
   push:
@@ -12,6 +12,10 @@ on:
     branches: [main]
     paths-ignore: ["**.md", "docs/**", "LICENSE", ".github/dependabot.yml"]
   workflow_dispatch:
+    inputs:
+      job:
+        description: "Integration job to run (all, compose-smoke, compose-ha, failover, mtls, ldap, agent-oauth, kubernetes)"
+        default: all
 
 permissions:
   contents: read
@@ -83,6 +87,9 @@ jobs:
       - run: npm run build
       - name: No external origins in the bundle (air-gap)
         run: npm run check:offline
+      - name: Helm chart's nginx configuration matches frontend/nginx.conf
+        working-directory: .
+        run: python3 .github/scripts/check_nginx_sync.py
 
   dependency-scan:
     name: Dependency vulnerability scan
@@ -109,7 +116,7 @@ jobs:
   compose-smoke:
     name: Docker Compose smoke test (no internet egress)
     needs: [backend, frontend]
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && (inputs.job == 'all' || inputs.job == 'compose-smoke')
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -232,7 +239,7 @@ jobs:
   compose-ha:
     name: Multi-replica Compose (2 API replicas, 2 workers)
     needs: [backend, frontend]
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && (inputs.job == 'all' || inputs.job == 'compose-ha')
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -301,7 +308,7 @@ jobs:
   failover:
     name: Failover (MongoDB replica set, Redis Sentinel)
     needs: [backend, frontend]
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && (inputs.job == 'all' || inputs.job == 'failover')
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -385,7 +392,7 @@ jobs:
   mtls:
     name: mTLS (agent certificates, upstream client certificates)
     needs: [backend, frontend]
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && (inputs.job == 'all' || inputs.job == 'mtls')
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     env:
@@ -415,7 +422,7 @@ jobs:
   ldap:
     name: LDAP (real OpenLDAP; LDAPS, StartTLS, group sync)
     needs: [backend, frontend]
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && (inputs.job == 'all' || inputs.job == 'ldap')
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     env:
@@ -445,7 +452,7 @@ jobs:
   agent-oauth:
     name: Agent OAuth (real Keycloak; client-credentials tokens)
     needs: [backend, frontend]
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && (inputs.job == 'all' || inputs.job == 'agent-oauth')
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     env:
@@ -471,3 +478,152 @@ jobs:
       - name: Tear down
         if: always()
         run: docker compose down -v
+
+  kubernetes:
+    name: Kubernetes (Helm chart on kind; restricted Pod Security)
+    needs: [backend, frontend]
+    if: github.event_name == 'workflow_dispatch' && (inputs.job == 'all' || inputs.job == 'kubernetes')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CHART: deploy/helm/mcp-gateway
+      NS: mgw
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Tools (preinstalled on the runner)
+        run: helm version --short && kind version && kubectl version --client
+      - name: Lint, and refuse unsafe configurations
+        run: |
+          set -u
+          helm lint "$CHART" --strict --set secrets.generate=true --set publicBaseUrl=https://mgw.example
+          fails() {  # the render must fail with this message
+            want="$1"; shift
+            if out=$(helm template t "$CHART" "$@" 2>&1); then echo "::error::rendered, expected: $want"; exit 1; fi
+            echo "$out" | grep -q "$want" || { echo "::error::wrong failure: $out"; exit 1; }
+            echo "refused as expected: $want"
+          }
+          fails "secrets.existingSecret" --set publicBaseUrl=https://mgw.example
+          fails "publicBaseUrl" --set secrets.existingSecret=s
+          fails "networkPolicy.enabled" --set secrets.existingSecret=s --set publicBaseUrl=https://x --set mtls.enabled=true --set mtls.existingSecret=m --set mtls.trustedProxies=10.0.0.0/8 --set networkPolicy.enabled=false
+          fails "external Redis" --set secrets.generate=true --set publicBaseUrl=https://x --set redis.enabled=false
+          helm template t "$CHART" --set secrets.existingSecret=s --set ingress.enabled=true --set ingress.host=mgw.example \
+            --set mongodb.enabled=false --set redis.enabled=false --set api.autoscaling.enabled=true > /tmp/external.yaml
+          if grep -q "kind: StatefulSet" /tmp/external.yaml; then echo "::error::databases rendered while disabled"; exit 1; fi
+          grep -q 'PUBLIC_BASE_URL: "https://mgw.example"' /tmp/external.yaml
+      - name: Images
+        run: |
+          docker build -t mcp-gateway/backend:0.1.0 backend
+          docker build -t mcp-gateway/web-ui:0.1.0 frontend
+          docker pull mongo:7.0.14
+          docker pull redis:7.4.1-alpine
+      - name: Cluster (kind; the namespace enforces the restricted Pod Security Standard)
+        run: |
+          kind create cluster --name mgw --wait 120s
+          for i in mcp-gateway/backend:0.1.0 mcp-gateway/web-ui:0.1.0 mongo:7.0.14 redis:7.4.1-alpine; do
+            kind load docker-image "$i" --name mgw
+          done
+          kubectl create namespace "$NS"
+          kubectl label namespace "$NS" pod-security.kubernetes.io/enforce=restricted pod-security.kubernetes.io/warn=restricted
+      - name: Every variant passes server-side validation
+        run: |
+          helm template t "$CHART" -n "$NS" --set secrets.generate=true --set publicBaseUrl=https://x \
+            | kubectl apply -n "$NS" --dry-run=server -f - > /dev/null
+          helm template t "$CHART" -n "$NS" --set secrets.existingSecret=s --set ingress.enabled=true \
+            --set mongodb.enabled=false --set redis.enabled=false --set api.autoscaling.enabled=true \
+            --set "web.realIpFrom={10.0.0.0/8}" | kubectl apply -n "$NS" --dry-run=server -f - > /dev/null
+          echo "server-side dry runs passed"
+      - name: Secret (create-secret.sh) and agent mTLS PKI
+        run: |
+          sh deploy/helm/create-secret.sh "$NS" mgw mgw-secrets /tmp/mgw-secrets
+          mkdir -p /tmp/pki && cd /tmp/pki
+          openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 1 -subj "/CN=agent-ca" \
+            -keyout ca.key -out agent-ca.pem -addext "basicConstraints=critical,CA:TRUE" -addext "keyUsage=critical,keyCertSign" 2>/dev/null
+          openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 1 -subj "/CN=localhost" \
+            -keyout server.key -out server.crt -addext "subjectAltName=DNS:localhost,IP:127.0.0.1" 2>/dev/null
+          openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -subj "/CN=hr-bot" -keyout agent.key -out agent.csr 2>/dev/null
+          printf 'extendedKeyUsage=clientAuth\nsubjectAltName=URI:spiffe://corp.example/agent/hr-bot\n' > agent.ext
+          openssl x509 -req -in agent.csr -CA agent-ca.pem -CAkey ca.key -CAcreateserial -days 1 -extfile agent.ext -out agent.crt 2>/dev/null
+          kubectl -n "$NS" create secret generic mgw-mtls --from-file=server.crt --from-file=server.key --from-file=agent-ca.pem
+      - name: Install (existing Secret, agent mTLS, network policies)
+        run: |
+          helm install mgw "$CHART" -n "$NS" --wait --timeout 8m \
+            --set secrets.existingSecret=mgw-secrets --set publicBaseUrl=https://mcp-gateway.internal.example \
+            --set mtls.enabled=true --set mtls.existingSecret=mgw-mtls --set mtls.trustedProxies=10.244.0.0/16 \
+            --set mtls.service.type=ClusterIP --set "web.realIpFrom={10.244.0.0/16}" \
+            --set mongodb.persistence.size=1Gi --set redis.persistence.size=1Gi
+          kubectl -n "$NS" get pods -o wide
+      - name: helm test
+        run: helm test mgw -n "$NS" --logs
+      - name: Smoke and SCIM checks through the web UI
+        run: |
+          kubectl -n "$NS" port-forward svc/mgw-mcp-gateway-web 8088:80 > /tmp/pf-web.log 2>&1 &
+          kubectl -n "$NS" port-forward svc/mgw-mcp-gateway-mtls 8443:8443 > /tmp/pf-mtls.log 2>&1 &
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:8088/healthz > /dev/null && break; sleep 1; done
+          python3 .github/scripts/compose_smoke.py http://127.0.0.1:8088 /tmp/mgw-secrets/bootstrap_admin_password
+          python3 .github/scripts/scim_check.py http://127.0.0.1:8088 /tmp/mgw-secrets/bootstrap_admin_password
+      - name: Agent mTLS listener
+        run: |
+          cd /tmp/pki
+          url=https://127.0.0.1:8443/api/v1/gateway/tools
+          # No client certificate: nginx refuses (400 after the handshake, or a failed handshake), never the gateway.
+          code=$(curl -s -o /dev/null -w '%{http_code}' --cacert server.crt "$url" || true)
+          case "$code" in 400|000) echo "no certificate refused ($code)";; *) echo "::error::no certificate: HTTP $code"; exit 1;; esac
+          code=$(curl -s -o /tmp/mtls.json -w '%{http_code}' --cacert server.crt --cert agent.crt --key agent.key "$url")
+          cat /tmp/mtls.json; echo
+          # A valid certificate that isn't registered: the gateway itself answers 401.
+          [ "$code" = 401 ] && grep -q INVALID_CREDENTIAL /tmp/mtls.json
+      - name: Network policies (enforced by kindnet)
+        run: |
+          cat > /tmp/probe.yaml <<'EOF'
+          apiVersion: v1
+          kind: Pod
+          metadata: { name: probe }
+          spec:
+            securityContext: { runAsNonRoot: true, runAsUser: 10001, seccompProfile: { type: RuntimeDefault } }
+            containers:
+              - name: probe
+                image: mcp-gateway/backend:0.1.0
+                imagePullPolicy: Never
+                command: ["sleep", "600"]
+                securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] } }
+          EOF
+          kubectl -n "$NS" apply -f /tmp/probe.yaml
+          kubectl -n "$NS" wait --for=condition=Ready pod/probe --timeout=60s
+          reach() { kubectl -n "$NS" exec probe -- python -c "import socket,sys; socket.create_connection((sys.argv[1], int(sys.argv[2])), timeout=3)" "$1" "$2" > /dev/null 2>&1; }
+          reach mgw-mcp-gateway-web 80 || { echo "::error::web UI unreachable from a pod"; exit 1; }
+          for target in "mgw-mcp-gateway-api 8080" "mgw-mcp-gateway-mongodb 27017" "mgw-mcp-gateway-redis 6379"; do
+            if reach $target; then echo "::error::$target reachable from an unrelated pod"; exit 1; fi
+            echo "blocked as expected: $target"
+          done
+      - name: Rolling restart without downtime
+        run: |
+          (fails=0; for i in $(seq 1 90); do curl -sf -o /dev/null http://127.0.0.1:8088/health/ready || fails=$((fails+1)); sleep 1; done; echo $fails > /tmp/fails) &
+          kubectl -n "$NS" rollout restart deploy/mgw-mcp-gateway-api deploy/mgw-mcp-gateway-worker
+          kubectl -n "$NS" rollout status deploy/mgw-mcp-gateway-api --timeout=5m
+          kubectl -n "$NS" rollout status deploy/mgw-mcp-gateway-worker --timeout=5m
+          wait
+          echo "failed requests during the API restart: $(cat /tmp/fails)"
+          [ "$(cat /tmp/fails)" -le 2 ]
+      - name: Generated Secret survives upgrade and uninstall
+        run: |
+          kubectl create namespace gen
+          kubectl label namespace gen pod-security.kubernetes.io/enforce=restricted
+          common="--set secrets.generate=true --set publicBaseUrl=https://gen.example --set api.replicaCount=1 --set web.replicaCount=1 --set mongodb.persistence.size=1Gi --set redis.persistence.size=1Gi"
+          helm install gen "$CHART" -n gen --wait --timeout 8m $common
+          before=$(kubectl -n gen get secret gen-mcp-gateway-secrets -o jsonpath='{.data}' | sha256sum)
+          helm upgrade gen "$CHART" -n gen --wait --timeout 8m $common --set config.LOG_LEVEL=DEBUG
+          after=$(kubectl -n gen get secret gen-mcp-gateway-secrets -o jsonpath='{.data}' | sha256sum)
+          [ "$before" = "$after" ] || { echo "::error::upgrade changed the generated keys"; exit 1; }
+          helm test gen -n gen
+          helm uninstall gen -n gen --wait
+          kubectl -n gen get secret gen-mcp-gateway-secrets > /dev/null || { echo "::error::Secret deleted on uninstall"; exit 1; }
+          echo "generated keys kept across upgrade and uninstall"
+      - name: Diagnostics
+        if: always()
+        run: |
+          kubectl get pods -A -o wide || true
+          kubectl -n "$NS" get events --sort-by=.lastTimestamp | tail -40 || true
+          for d in api worker web; do kubectl -n "$NS" logs deploy/mgw-mcp-gateway-$d --tail=60 || true; done
+          kubectl -n "$NS" logs statefulset/mgw-mcp-gateway-mongodb --tail=40 || true
+          kubectl -n "$NS" logs statefulset/mgw-mcp-gateway-redis --tail=20 || true
+          kubectl -n gen get pods || true

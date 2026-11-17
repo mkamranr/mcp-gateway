@@ -43,3 +43,4 @@ backups/
 .github/ldap/pki/
 # Agent OAuth CI job: throwaway PKI (.github/oauth/make-pki.sh)
 .github/oauth/pki/
+secrets-k8s-*/
