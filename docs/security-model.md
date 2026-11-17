@@ -153,6 +153,7 @@ development only and is ignored in production.
 | Agent keys | HMAC-SHA256 with `API_KEY_HASH_PEPPER` |
 | Passwords | Argon2id |
 | Process secrets | env vars or `<NAME>_FILE` mounted files. Production rejects placeholders and values shorter than 32 characters. |
+| Master keys (optional) | `DATA_ENCRYPTION_KEY`, `API_KEY_HASH_PEPPER` and `SESSION_SECRET` wrapped by a key service (Vault Transit, or any KMS or HSM through a command) and unwrapped once at startup, so files and backups hold only ciphertext. See [key-management.md](key-management.md). |
 
 Logs pass through a scrubber that redacts sensitive keys, `mgw_` keys and Bearer tokens. Key rotation:
 [operations.md](operations.md#encryption-key-rotation).

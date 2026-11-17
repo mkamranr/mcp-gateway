@@ -288,6 +288,14 @@ class SettingsUpdate(Strict):
     values: dict[str, Any]
 
 
+def _key_management(s: Any) -> dict[str, Any]:
+    """Which secrets the key service unwrapped at startup, and the (non-secret) key service settings."""
+    from app.core import kms
+
+    wrapped = s.kms_wrapped
+    return {"wrapped": wrapped, **(kms.KmsConfig.from_env().describe() if wrapped else {"provider": None})}
+
+
 @router.get("/settings")
 async def get_settings_(p: Principal = Depends(require_user()), c: Container = Depends(get_container)) -> dict[str, Any]:
     s = c.settings
@@ -300,7 +308,8 @@ async def get_settings_(p: Principal = Depends(require_user()), c: Container = D
             "session": {"ttl_minutes": s.session_ttl_minutes, "idle_minutes": s.session_idle_minutes,
                         "cookie_secure": s.cookie_secure},
             "security": {"default_deny": True, "audit_required_for_execution": s.audit_required_for_execution,
-                         "allow_private_upstream_networks": s.allow_private_upstream_networks},
+                         "allow_private_upstream_networks": s.allow_private_upstream_networks,
+                         "key_management": _key_management(s)},
             "payload_limits": {"max_input_bytes": s.max_input_bytes, "max_output_bytes": s.max_output_bytes,
                                "max_json_depth": s.max_json_depth, "default_tool_timeout_seconds":
                                    s.default_tool_timeout_seconds, "max_tool_timeout_seconds": s.max_tool_timeout_seconds},

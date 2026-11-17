@@ -12,11 +12,16 @@ import { LdapSettings } from './LdapSettings'
 import { ScimSettings } from './ScimSettings'
 import { SsoSettings } from './SsoSettings'
 
+interface KeyManagementInfo {
+  provider: 'vault' | 'command' | null; wrapped: string[]
+  address?: string; key?: string; namespace?: string | null; auth?: string; command?: string | null
+}
+
 interface SettingsResp {
   system: {
     version: string; environment: string; mcp_endpoint: string; public_base_url: string | null
     session: { ttl_minutes: number; idle_minutes: number; cookie_secure: boolean }
-    security: { default_deny: boolean; audit_required_for_execution: boolean; allow_private_upstream_networks: boolean }
+    security: { default_deny: boolean; audit_required_for_execution: boolean; allow_private_upstream_networks: boolean; key_management?: KeyManagementInfo }
     payload_limits: Record<string, number>
     network: { upstream_host_allowlist: string[]; stdio_executable_allowlist: string[]; cors_allowed_origins: string[] }
     audit: { retention_days: number; export_max_rows: number }
@@ -70,6 +75,7 @@ function SettingsSection({ section, d }: { section: Section; d: SettingsResp }) 
     <div className="toggle-row"><span>Block sensitive execution when audit storage is unavailable</span>{s.security.audit_required_for_execution ? <Badge color="green">on</Badge> : <Badge color="red">off</Badge>}</div>
     <div className="toggle-row"><span>Allow private upstream networks (platform default)</span>{s.security.allow_private_upstream_networks ? <Badge color="orange">allowed</Badge> : <Badge color="green">blocked</Badge>}</div>
     <div className="toggle-row"><span>Critical tools require approval (this tenant)</span>{d.tenant.critical_requires_approval !== false ? <Badge color="green">on</Badge> : <Badge color="red">off</Badge>}</div>
+    <KeyManagement km={s.security.key_management} />
     <Callout>Secrets, encryption keys and peppers are configured only through environment variables or mounted secret files. They are never shown here.</Callout>
   </Panel>
 
@@ -139,4 +145,14 @@ function Account() {
     <div className="form-actions"><button className="btn primary" disabled={!cur || next.length < 12 || next !== confirm || m.isPending} onClick={() => m.mutate()}>Change password</button></div>
     </>}
   </Panel>
+}
+
+const KEY_LABELS: Record<string, string> = { data_encryption_key: 'data encryption key', api_key_hash_pepper: 'API key pepper', session_secret: 'session secret' }
+
+function KeyManagement({ km }: { km?: KeyManagementInfo }) {
+  if (!km?.provider) return <div className="toggle-row"><span>Keys protected by a key service (KMS / HSM)</span><Badge color="orange">no: keys are in secret files</Badge></div>
+  const where = km.provider === 'vault'
+    ? `Vault Transit key ${km.key} at ${km.address}${km.namespace ? ` (namespace ${km.namespace})` : ''}, ${km.auth} auth`
+    : `external command ${km.command ?? ''}`
+  return <div className="toggle-row"><span>Keys protected by a key service: {km.wrapped.map(w => KEY_LABELS[w] || w).join(', ')}<div className="muted" style={{ fontSize: 10, marginTop: 3 }}>{where}</div></span><Badge color="green">{km.provider === 'vault' ? 'Vault' : 'command'}</Badge></div>
 }

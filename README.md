@@ -82,6 +82,8 @@ append-only audit log, before anything reaches the upstream server.
   soon as they change there, and deactivating a user ends their sessions at once.
 - **Mutual TLS.** Agents can authenticate with client certificates from your PKI (SPIFFE IDs or pinned
   certificates), and the gateway presents client certificates to upstreams that require them.
+- **KMS / HSM key protection:** the master keys can be wrapped by HashiCorp Vault Transit or any KMS or HSM
+  (AWS KMS, Google Cloud KMS, vendor tools) and unwrapped only in memory at startup.
 
 </td>
 <td valign="top">
@@ -258,7 +260,7 @@ egress blocked, as an air-gapped host would.
 | Design | [Architecture](docs/architecture.md) · [Security model](docs/security-model.md) · [Threat model](docs/threat-model.md) |
 | Integration | [API reference](docs/api-reference.md) · [MCP client configuration](docs/mcp-client-configuration.md) |
 | Deployment | [Deployment](docs/deployment.md) · [Kubernetes](docs/kubernetes.md) · [Air-gapped installation](docs/air-gapped-installation.md) · [High availability](docs/high-availability.md) |
-| Features | [Approvals and delegation](docs/approvals.md) · [Single sign-on](docs/sso.md) · [LDAP / Active Directory](docs/ldap.md) · [SCIM provisioning](docs/scim.md) · [Agent OAuth](docs/agent-oauth.md) · [Mutual TLS](docs/mtls.md) · [SIEM forwarding](docs/siem.md) · [Policy as code](docs/policy-as-code.md) |
+| Features | [Approvals and delegation](docs/approvals.md) · [Single sign-on](docs/sso.md) · [LDAP / Active Directory](docs/ldap.md) · [SCIM provisioning](docs/scim.md) · [Key management (KMS/HSM)](docs/key-management.md) · [Agent OAuth](docs/agent-oauth.md) · [Mutual TLS](docs/mtls.md) · [SIEM forwarding](docs/siem.md) · [Policy as code](docs/policy-as-code.md) |
 | Running it | [Operations and runbooks](docs/operations.md) |
 
 ## Security

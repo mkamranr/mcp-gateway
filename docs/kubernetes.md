@@ -26,6 +26,7 @@ Verified in CI on a kind cluster (`kubernetes` job, started by hand like the oth
   all capabilities dropped, no privilege escalation and the `RuntimeDefault` seccomp profile.
 - **Service accounts:** tokens are not mounted, because the gateway never calls the Kubernetes API.
 - **Secrets:** mounted as files (mode 0440) and read through `*_FILE`, never through environment variables.
+  They can be wrapped by Vault or a KMS, so the Secret holds only ciphertext ([key management](key-management.md)).
   Redis reads its password from a file, so it never appears on a command line.
 - **Network policies (ingress):**
   - MongoDB and Redis accept only the API and the worker.

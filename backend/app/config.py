@@ -13,7 +13,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, PrivateAttr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 PLACEHOLDER_MARKERS = ("replace-with", "changeme", "change-me", "example", "placeholder")
@@ -119,8 +119,18 @@ class Settings(BaseSettings):
             return items
         return v
 
+    _kms_wrapped: list[str] = PrivateAttr(default_factory=list)
+
     @model_validator(mode="after")
     def _validate_secrets(self) -> Settings:
+        from app.core import kms
+
+        # Wrapped secrets (docs/key-management.md) are unwrapped once, here, by the key service. KmsError is not a
+        # ValueError, so it propagates as is, without pydantic echoing the inputs.
+        plain, wrapped = kms.unwrap_values({n: getattr(self, n) for n in kms.WRAPPABLE})
+        for name in wrapped:
+            setattr(self, name, plain[name])
+        self._kms_wrapped = wrapped
         if self.app_env == "production":
             for name in ("session_secret", "data_encryption_key", "api_key_hash_pepper"):
                 value = getattr(self, name)
@@ -161,6 +171,11 @@ class Settings(BaseSettings):
         if len(raw) != 32:
             raise ValueError("DATA_ENCRYPTION_KEY must decode to exactly 32 bytes")
         return raw
+
+    @property
+    def kms_wrapped(self) -> list[str]:
+        """Names of the secrets that were unwrapped by the key service at startup."""
+        return list(self._kms_wrapped)
 
     @property
     def oidc_redirect_uri(self) -> str:

@@ -186,6 +186,9 @@ or a growing queue depth. The `mgw_approval_oldest_age_seconds` metric rises.
 ## Encryption key rotation
 
 `DATA_ENCRYPTION_KEY` (AES-256-GCM) protects upstream credentials, approval arguments and approved results.
+If the keys are wrapped by a key service, rotating the key-encryption key there is a separate and simpler
+procedure that leaves MongoDB untouched ([key management](key-management.md#rotation)). Either key file below may be
+wrapped.
 
 ```bash
 docker compose stop gateway-api worker                     # no writers during rotation

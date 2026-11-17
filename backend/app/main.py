@@ -42,7 +42,8 @@ def create_app(settings: Settings | None = None, container: Container | None = N
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await ensure_indexes(c.db)
         await c.identity.bootstrap()
-        log.info("gateway.started", env=settings.app_env, version=settings.app_version)
+        log.info("gateway.started", env=settings.app_env, version=settings.app_version,
+                 kms_wrapped=settings.kms_wrapped or None)
         async with manager.run():
             yield
         if container is None:

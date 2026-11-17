@@ -72,7 +72,7 @@ def _non_blocking_worker_class() -> type:
 
 
 async def _run(api_port: int, mock_port: int, admin_password: str, oidc_port: int | None = None,
-               public_base_url: str | None = None) -> None:
+               public_base_url: str | None = None, vault_port: int | None = None) -> None:
     import fakeredis
     from pymongo_inmemory.context import Context
     from pymongo_inmemory.mongod import Mongod
@@ -104,13 +104,28 @@ async def _run(api_port: int, mock_port: int, admin_password: str, oidc_port: in
                 oidc_port = _free_port()
             idp = mock_oidc.MockIdP(issuer=f"http://127.0.0.1:{oidc_port}")
             _start_thread_server(mock_oidc.build_app(idp), oidc_port)
+        session_secret = secrets.token_urlsafe(48)
+        data_key = base64.urlsafe_b64encode(os.urandom(32)).decode()
+        pepper = secrets.token_urlsafe(48)
+        if vault_port is not None:
+            # Keys protected by a (mock) Vault Transit, exactly as in production (docs/key-management.md).
+            from app.core import kms
+            from devtools import mock_vault
+
+            if not _port_available(vault_port):
+                vault_port = _free_port()
+            vault = mock_vault.MockVault()
+            _start_thread_server(mock_vault.build_app(vault), vault_port)
+            os.environ.update({"KMS_PROVIDER": "vault", "VAULT_ADDR": f"http://127.0.0.1:{vault_port}",
+                               "VAULT_TRANSIT_KEY": vault.key_name, "VAULT_TOKEN": vault.root_token,
+                               "KMS_ALLOW_INSECURE_HTTP": "true", "APP_ENV": "development"})
+            provider = kms.provider_for(kms.KmsConfig.from_env())
+            session_secret, data_key, pepper = (kms.wrap(provider, v) for v in (session_secret, data_key, pepper))
         settings = Settings(
             app_env="development", app_port=api_port, log_level="INFO",
             mongodb_uri=mongod.connection_string, mongodb_database="mcp_gateway_dev",
             redis_url=redis_url or "redis://unused-in-process-fakeredis:6379/0",
-            session_secret=secrets.token_urlsafe(48),
-            data_encryption_key=base64.urlsafe_b64encode(os.urandom(32)).decode(),
-            api_key_hash_pepper=secrets.token_urlsafe(48),
+            session_secret=session_secret, data_encryption_key=data_key, api_key_hash_pepper=pepper,
             cookie_secure=False, public_base_url=public_base_url or f"http://localhost:{api_port}",
             oidc_allow_insecure_http=True,
             allow_private_upstream_networks=True,
@@ -186,10 +201,12 @@ def main() -> None:
     parser.add_argument("--public-base-url", default=None,
                         help="URL the browser uses (default: http://localhost:5173 with --with-oidc, so the "
                              "IdP redirects back through the Vite dev server)")
+    parser.add_argument("--with-vault", nargs="?", type=int, const=9500, default=None, metavar="PORT",
+                        help="also run a mock Vault Transit (default port 9500) and wrap the keys with it")
     ns = parser.parse_args()
     base = ns.public_base_url or ("http://localhost:5173" if ns.with_oidc is not None else None)
     with contextlib.suppress(KeyboardInterrupt):
-        asyncio.run(_run(ns.api_port, ns.mock_port, ns.admin_password, ns.with_oidc, base))
+        asyncio.run(_run(ns.api_port, ns.mock_port, ns.admin_password, ns.with_oidc, base, ns.with_vault))
 
 
 if __name__ == "__main__":

@@ -14,6 +14,8 @@ already decrypt with the new key are skipped, so an interrupted run can be repea
 or plaintext.
 
     python -m app.tools.rotate_encryption_key --old-key-file old.key --new-key-file new.key [--dry-run]
+
+Either key file may be wrapped by the key service (docs/key-management.md).
 """
 
 from __future__ import annotations
@@ -40,7 +42,15 @@ TARGETS: list[tuple[str, str, str]] = [
 
 
 def load_key(path: str) -> bytes:
+    """A plain key file, or a wrapped one (docs/key-management.md), unwrapped through the key service."""
+    from app.core import kms
+
     value = Path(path).read_text(encoding="utf-8").strip()
+    if kms.is_wrapped(value):
+        try:
+            value = kms.unwrap(kms.provider_for(kms.KmsConfig.from_env()), value)
+        except kms.KmsError as exc:
+            raise SystemExit(f"{path}: {exc}") from None
     raw = base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
     if len(raw) != 32:
         raise SystemExit(f"{path}: key must decode to exactly 32 bytes")
