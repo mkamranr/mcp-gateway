@@ -26,6 +26,7 @@ from app.core.identity import Principal, Role
 from app.core.ids import ensure_aware, utcnow
 from app.core.logging import get_logger
 from app.repositories.collections import Repos
+from app.services.agent_oauth import TokenRejected, looks_like_jwt, oauth_match
 from app.services.audit_service import AuditService
 
 log = get_logger(__name__)
@@ -44,6 +45,8 @@ class AuthService:
         self.cert_proxies = parse_networks(settings.mtls_trusted_proxies)
         # LDAP sign-in (app.services.ldap_service.LdapService), attached by the container.
         self.directory: Any = None
+        # OAuth access tokens for agents (app.services.agent_oauth.AgentOAuthService), attached by the container.
+        self.agent_oauth: Any = None
 
     # ------------------------------------------------------------------ rate limiting
     @staticmethod
@@ -249,11 +252,15 @@ class AuthService:
 
     # ------------------------------------------------------------------ agents
     async def authenticate_agent(self, headers: Mapping[str, str], source: str | None) -> Principal | None:
-        """An agent credential on the request: an API key (``Authorization: Bearer``), else a client certificate
-        forwarded by a trusted TLS proxy. ``None`` when the request carries neither. ``headers`` are lower-case."""
+        """An agent credential on the request: an API key or an IdP access token (``Authorization: Bearer``), else
+        a client certificate forwarded by a trusted TLS proxy. ``None`` when the request carries none of them.
+        ``headers`` are lower-case."""
         auth = headers.get("authorization", "")
         if auth.lower().startswith("bearer "):
-            return await self.authenticate_api_key(auth[7:], source=source)
+            token = auth[7:].strip()
+            if self.agent_oauth is not None and looks_like_jwt(token):
+                return await self.authenticate_access_token(token, source=source)
+            return await self.authenticate_api_key(token, source=source)
         forwarded = headers.get(self.settings.mtls_client_cert_header.lower(), "")
         if not forwarded or self.cert_verifier is None:
             return None
@@ -284,6 +291,20 @@ class AuthService:
                 log.warning("auth.client_cert.ambiguous", fingerprint=info.fingerprint_sha256[:16])
             raise GatewayError(ErrorCode.INVALID_CREDENTIAL)
         return await self._agent_principal(matches[0], source)
+
+    async def authenticate_access_token(self, token: str, source: str | None = None) -> Principal:
+        """Resolve an IdP-issued access token (OAuth 2.0, docs/agent-oauth.md) to an agent Principal."""
+        try:
+            issuer, subject, claims = await self.agent_oauth.validate(token)
+        except TokenRejected as exc:
+            log.info("auth.access_token.rejected", reason=exc.reason)
+            raise GatewayError(ErrorCode.INVALID_CREDENTIAL) from None
+        await self._throttle(self.agent_oauth.throttle_key(issuer, subject), 6000, 60)
+        creds = await self.repos.credentials.by_oauth_match_global(oauth_match(issuer, subject))
+        if len(creds) != 1:
+            log.info("auth.access_token.unmatched", issuer=issuer, subject=subject[:64], matches=len(creds))
+            raise GatewayError(ErrorCode.INVALID_CREDENTIAL)
+        return await self._agent_principal(creds[0], source)
 
     async def authenticate_api_key(self, raw_key: str, source: str | None = None) -> Principal:
         """Resolve an agent API key to a Principal. Every failure path is indistinguishable to the caller."""

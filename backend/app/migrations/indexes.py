@@ -32,6 +32,9 @@ INDEXES: dict[str, list[IndexModel]] = {
         # Certificate credentials: "fp:<sha256>" (a pinned certificate) or "san:<name>" (any trusted certificate
         # with that subject alternative name).
         IndexModel([("cert_match", A), ("revoked_at", A)], partialFilterExpression={"cert_match": {"$type": "string"}}),
+        # OAuth credentials: "<issuer>\n<client>" (docs/agent-oauth.md).
+        IndexModel([("oauth_match", A), ("revoked_at", A)],
+                   partialFilterExpression={"oauth_match": {"$type": "string"}}),
         IndexModel([("tenant_id", A), ("principal_id", A), ("revoked_at", A)]),
     ],
     "secrets": [IndexModel([("tenant_id", A), ("owner_id", A)])],

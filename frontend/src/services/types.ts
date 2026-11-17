@@ -50,6 +50,13 @@ export interface LdapTestResult {
   user?: { dn: string; unique_id: string; username: string; email: string | null; display_name: string | null; groups: string[]; grants: Record<string, string[]>; platform_admin: boolean } | null
 }
 
+export interface TrustedIssuer {
+  issuer: string; display_name: string; audience: string; jwks_uri: string; subject_claim: string
+  allowed_algorithms: string[]; required_scopes: string[]; max_token_lifetime_seconds: number; require_at_jwt_type: boolean
+}
+export interface AgentOAuthConfig { enabled: boolean; issuers: TrustedIssuer[]; updated_at: string | null; updated_by: string | null }
+export interface AgentOAuthStatus { enabled: boolean; issuers: { issuer: string; display_name: string; subject_claim: string }[] }
+
 export interface CertInfo {
   fingerprint_sha256: string; subject: string; issuer: string; serial: string
   not_before: string; not_after: string; sans: string[]
@@ -130,8 +137,9 @@ export interface Decision {
 
 export interface Credential {
   id: string; name: string; principal_id: string; scopes: string[]
-  type: 'api_key' | 'client_certificate'; key_prefix: string | null
+  type: 'api_key' | 'client_certificate' | 'oauth_client'; key_prefix: string | null
   certificate: CertInfo | null; subject_name: string | null
+  oauth: { issuer: string; subject: string; subject_claim: string } | null
   expires_at: string | null; revoked_at: string | null; last_used_at: string | null
   last_used_source: string | null; created_at: string; created_by: string; status: 'active' | 'revoked' | 'expired'
   secret?: string

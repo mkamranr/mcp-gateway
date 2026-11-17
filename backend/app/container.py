@@ -9,6 +9,7 @@ from app.core.crypto import Encryptor
 from app.db import Database, create_redis
 from app.mcp.client_manager import ClientManager
 from app.repositories.collections import Repos
+from app.services.agent_oauth import AgentOAuthService
 from app.services.approval_service import ApprovalService
 from app.services.audit_service import AuditService
 from app.services.auth_service import AuthService
@@ -39,6 +40,8 @@ class Container:
         self.sso = SsoService(settings, self.repos, self.redis, self.encryptor, self.audit, self.auth)
         self.ldap = LdapService(settings, self.repos, self.encryptor, self.audit)
         self.auth.directory = self.ldap
+        self.agent_oauth = AgentOAuthService(settings, self.repos, self.audit)
+        self.auth.agent_oauth = self.agent_oauth
         self.siem = SiemService(settings, self.repos, self.redis, self.encryptor, self.audit)
         self.registry = RegistryService(settings, self.repos, self.encryptor, self.audit, self.clients)
         self.policy = PolicyService(self.repos, self.audit)

@@ -23,6 +23,7 @@ from app.core.identity import SECURITY, Principal
 from app.models.identity import (
     AgentCertificateCreate,
     AgentKeyCreate,
+    AgentOAuthClientCreate,
     ChangePasswordRequest,
     LoginRequest,
     RevokeRequest,
@@ -131,6 +132,18 @@ async def agent_certificate_status(_: Principal = Depends(require_user()),
 async def create_agent_certificate(body: AgentCertificateCreate, p: Principal = Depends(require_user(*SECURITY)),
                                    c: Container = Depends(get_container)) -> dict[str, Any]:
     return await c.identity.create_certificate(p, body)
+
+
+@router.get("/agent-oauth/status")
+async def agent_oauth_status(_: Principal = Depends(require_user()),
+                             c: Container = Depends(get_container)) -> dict[str, Any]:
+    return await c.agent_oauth.public_view()
+
+
+@router.post("/agent-oauth-clients", status_code=201)
+async def create_agent_oauth_client(body: AgentOAuthClientCreate, p: Principal = Depends(require_user(*SECURITY)),
+                                    c: Container = Depends(get_container)) -> dict[str, Any]:
+    return await c.identity.create_oauth_client(p, body)
 
 
 # ---- agent keys (spec §16.1) ----

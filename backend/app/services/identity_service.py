@@ -18,6 +18,7 @@ from app.models.identity import (
     AgentCertificateCreate,
     AgentCreate,
     AgentKeyCreate,
+    AgentOAuthClientCreate,
     AgentUpdate,
     MembershipUpdate,
     TenantCreate,
@@ -27,6 +28,7 @@ from app.models.identity import (
 )
 from app.models.policy import Constraints, Principals, Resources
 from app.repositories.collections import Repos
+from app.services.agent_oauth import oauth_match
 from app.services.audit_service import AuditService
 from app.services.auth_service import AuthService
 
@@ -289,6 +291,36 @@ class IdentityService:
                       "subject_name": data.subject_name})
         return credential_to_api(cred)
 
+    async def create_oauth_client(self, p: Principal, data: AgentOAuthClientCreate) -> dict[str, Any]:
+        """Register an OAuth credential (docs/agent-oauth.md). Nothing secret is stored: the agent authenticates to
+        its IdP, and the gateway verifies the IdP's signature on each access token."""
+        oauth = self.auth.agent_oauth
+        cfg: dict[str, Any] = await oauth.config(fresh=True) if oauth is not None else {"enabled": False, "issuers": []}
+        entry = next((i for i in cfg["issuers"] if i["issuer"] == data.issuer), None)
+        if entry is None:
+            raise GatewayError(ErrorCode.VALIDATION_FAILED, "That issuer isn't trusted for agent tokens. A platform "
+                                                            "administrator adds issuers under Settings.")
+        agent = await self.get_agent(p, data.agent_id)
+        if agent.get("status") != "active":
+            raise GatewayError(ErrorCode.CONFLICT, "Credentials can only be issued to active agents.")
+        expires = ensure_aware(data.expires_at)
+        if expires and expires <= utcnow():
+            raise GatewayError(ErrorCode.VALIDATION_FAILED, "Expiry must be in the future.")
+        match = oauth_match(data.issuer, data.subject)
+        if await self.repos.credentials.by_oauth_match_global(match):
+            raise GatewayError(ErrorCode.CONFLICT, "An active credential already uses this client.")
+        cred = await self.repos.credentials.insert(p.tenant_id, {
+            "type": "oauth_client", "name": data.name, "principal_type": "agent", "principal_id": agent["_id"],
+            "oauth_match": match, "oauth": {"issuer": data.issuer, "subject": data.subject,
+                                            "subject_claim": entry["subject_claim"]},
+            "scopes": list(data.scopes), "expires_at": expires, "revoked_at": None, "last_used_at": None,
+            "created_by": p.principal_id,
+        })
+        await self.audit.record(p.tenant_id, "credential.created", principal=p, resource={
+            "agent_id": agent["_id"], "credential_id": cred["_id"], "credential_type": "oauth_client"},
+            metadata={"issuer": data.issuer, "subject": data.subject})
+        return credential_to_api(cred)
+
     def certificate_status(self) -> dict[str, Any]:
         """Whether agents can use client certificates here, and which CAs may issue them (public information)."""
         verifier = self.auth.cert_verifier
@@ -305,6 +337,9 @@ class IdentityService:
         cred = await self.repos.credentials.get(p.tenant_id, cred_id)
         if not cred or cred.get("revoked_at"):
             raise not_found("Credential")
+        if cred.get("type") == "oauth_client":
+            raise GatewayError(ErrorCode.VALIDATION_FAILED, "OAuth credentials have no secret here to rotate. Rotate "
+                               "the client secret or key at your identity provider.")
         if cred.get("type") == "client_certificate":
             raise GatewayError(ErrorCode.VALIDATION_FAILED, "Certificate credentials aren't rotated here. Match by "
                                "subject name to renew certificates freely, or add the new certificate and revoke "

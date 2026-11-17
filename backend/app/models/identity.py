@@ -132,6 +132,28 @@ class AgentCertificateCreate(Strict):
         return self
 
 
+class AgentOAuthClientCreate(Strict):
+    """An OAuth credential: access tokens from ``issuer`` whose subject claim is ``subject`` (usually the client
+    ID) authenticate as this agent."""
+
+    agent_id: str
+    name: str = Field(default="OAuth client", min_length=1, max_length=100)
+    issuer: str = Field(min_length=1, max_length=500)
+    subject: str = Field(min_length=1, max_length=256)
+    scopes: list[AgentScope] = Field(
+        default_factory=lambda: ["tools:list", "tools:invoke", "approvals:read"]  # type: ignore[arg-type]
+    )
+    expires_at: datetime | None = None
+
+    @field_validator("subject")
+    @classmethod
+    def _subject(cls, v: str) -> str:
+        v = v.strip()
+        if not v or any(ord(ch) < 32 for ch in v):
+            raise ValueError("Invalid client identifier")
+        return v
+
+
 class RevokeRequest(Strict):
     reason: str = Field(default="", max_length=500)
 
@@ -149,7 +171,7 @@ def credential_to_api(doc: dict[str, Any]) -> dict[str, Any]:
         "id": doc["_id"], "tenant_id": doc["tenant_id"], "name": doc.get("name"),
         "principal_type": doc["principal_type"], "principal_id": doc["principal_id"],
         "type": doc.get("type", "api_key"), "key_prefix": doc.get("key_prefix"),
-        "certificate": doc.get("certificate"), "subject_name": doc.get("subject_name"),
+        "certificate": doc.get("certificate"), "subject_name": doc.get("subject_name"), "oauth": doc.get("oauth"),
         "scopes": doc.get("scopes", []), "expires_at": doc.get("expires_at"),
         "revoked_at": doc.get("revoked_at"), "revoked_by": doc.get("revoked_by"),
         "last_used_at": doc.get("last_used_at"), "last_used_source": doc.get("last_used_source"),

@@ -1,0 +1,48 @@
+# Agent OAuth test topology (CI job "agent-oauth"), layered on docker-compose.yml:
+#
+#   sh .github/oauth/make-pki.sh
+#   COMPOSE_FILE=docker-compose.yml:.github/oauth/docker-compose.oauth.yml docker compose up -d --wait
+#
+# keycloak is a real identity provider issuing client-credentials access tokens over HTTPS (a throwaway CA the
+# gateway trusts through OIDC_CA_BUNDLE_FILE). Its issuer is https://keycloak:8443/realms/ci whichever way a
+# client reaches it; CI fetches tokens through the published port 127.0.0.1:18443.
+
+x-oauth-env: &oauth-env
+  OIDC_CA_BUNDLE_FILE: /run/secrets/idp_ca
+
+services:
+  gateway-api:
+    environment: *oauth-env
+    secrets: [idp_ca]
+
+  worker:
+    environment: *oauth-env
+    secrets: [idp_ca]
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0.7
+    command: ["start-dev", "--import-realm", "--http-enabled=false", "--hostname=https://keycloak:8443",
+              "--https-certificate-file=/opt/keycloak/conf/tls/server.crt",
+              "--https-certificate-key-file=/opt/keycloak/conf/tls/server.key"]
+    volumes:
+      - ./.github/oauth/pki:/opt/keycloak/conf/tls:ro
+      - ./.github/oauth/realm-ci.json:/opt/keycloak/data/import/realm-ci.json:ro
+    ports: ["127.0.0.1:18443:8443"]
+    networks: [frontend]
+
+  mock-upstream:
+    image: ${MGW_BACKEND_IMAGE:-mcp-gateway/backend:0.1.0}
+    command: ["python", "-m", "devtools.mock_mcp_server", "--host", "0.0.0.0", "--port", "9100"]
+    volumes: ["./backend/devtools:/app/devtools:ro"]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 9100), 3).close()"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks: [frontend]
+
+secrets:
+  idp_ca: { file: ./.github/oauth/pki/idp-ca.pem }

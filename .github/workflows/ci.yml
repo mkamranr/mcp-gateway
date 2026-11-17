@@ -428,3 +428,32 @@ jobs:
       - name: Tear down
         if: always()
         run: docker compose down -v
+
+  agent-oauth:
+    name: Agent OAuth (real Keycloak; client-credentials tokens)
+    needs: [backend, frontend]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      COMPOSE_FILE: docker-compose.yml:.github/oauth/docker-compose.oauth.yml
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Secrets, throwaway PKI, images
+        run: |
+          sh deploy/scripts/generate-secrets.sh
+          cp .env.example .env
+          sh .github/oauth/make-pki.sh
+          docker compose build gateway-api web-ui
+          docker compose pull mongodb redis keycloak
+      - name: Start (console on 8088, Keycloak on the gateway's egress network)
+        run: |
+          docker compose up -d --no-build --pull never --wait --wait-timeout 300
+          docker compose ps
+      - name: End-to-end agent OAuth checks
+        run: python3 .github/scripts/oauth_check.py http://127.0.0.1:8088 https://127.0.0.1:18443 secrets/bootstrap_admin_password .github/oauth/pki
+      - name: Logs
+        if: always()
+        run: docker compose logs --no-color --tail=200
+      - name: Tear down
+        if: always()
+        run: docker compose down -v

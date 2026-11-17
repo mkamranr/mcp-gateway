@@ -75,6 +75,10 @@ class CredentialRepository(TenantScopedRepository):
         """Privileged: active certificate credentials matching a presented certificate (authentication)."""
         return [d async for d in self.col.find({"cert_match": {"$in": keys}, "revoked_at": None}).limit(10)]
 
+    async def by_oauth_match_global(self, key: str) -> list[dict[str, Any]]:
+        """Privileged: active OAuth credentials for an issuer + client (authentication)."""
+        return [d async for d in self.col.find({"oauth_match": key, "revoked_at": None}).limit(5)]
+
     async def touch(self, tenant_id: str, cred_id: str, source: str | None) -> None:
         await self.col.update_one(
             {"_id": cred_id, "tenant_id": tenant_id},

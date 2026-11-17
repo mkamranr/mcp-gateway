@@ -41,3 +41,5 @@ backups/
 .github/mtls/pki/
 # LDAP CI job: throwaway PKI (.github/ldap/make-pki.sh)
 .github/ldap/pki/
+# Agent OAuth CI job: throwaway PKI (.github/oauth/make-pki.sh)
+.github/oauth/pki/

@@ -9,7 +9,19 @@ from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.middleware import CorrelationMiddleware, install_error_handlers
-from app.api.v1 import approvals, auth, health, identity, ldap, observability, policies, registry, siem, sso
+from app.api.v1 import (
+    agent_oauth,
+    approvals,
+    auth,
+    health,
+    identity,
+    ldap,
+    observability,
+    policies,
+    registry,
+    siem,
+    sso,
+)
 from app.config import Settings, get_settings
 from app.container import Container
 from app.core.logging import configure_logging, get_logger
@@ -47,7 +59,7 @@ def create_app(settings: Settings | None = None, container: Container | None = N
     install_error_handlers(app)
 
     api = APIRouter(prefix="/api/v1")
-    for r in (auth.router, sso.router, ldap.router, siem.router, identity.router, registry.router, policies.router, approvals.router,
+    for r in (auth.router, sso.router, ldap.router, agent_oauth.router, siem.router, identity.router, registry.router, policies.router, approvals.router,
               observability.router):
         api.include_router(r)
     app.include_router(api)

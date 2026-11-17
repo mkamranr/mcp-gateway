@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Check, Copy, KeyRound, Loader2 } from 'lucide-react'
 import { api } from '../../services/api'
-import type { CertInfo, Credential } from '../../services/types'
+import type { AgentOAuthStatus, CertInfo, Credential } from '../../services/types'
 import { Callout, Field, Modal, Tabs, useToast } from '../../components/ui'
 
 const SCOPES = [
@@ -69,6 +69,39 @@ export function AddCertificateDialog({ agentId, agentName, status, onClose }: { 
       <div className="field"><span>Scopes</span>{SCOPES.map(s => <label className="check" key={s.value}><input type="checkbox" checked={scopes.includes(s.value)} onChange={e => setScopes(e.target.checked ? [...scopes, s.value] : scopes.filter(x => x !== s.value))} />{s.label}</label>)}</div>
       <Field label="Expires (optional)"><input type="datetime-local" value={expires} onChange={e => setExpires(e.target.value)} /></Field>
       <Callout>Accepted from: {status.trusted_cas.map(c => c.subject).join('; ') || 'no CA configured'}. The agent connects to the gateway's mTLS listener with its certificate; no key is shown or stored.</Callout>
+    </Modal>
+  )
+}
+
+/** OAuth credential: the agent authenticates to its identity provider (client credentials) and presents the access
+ *  token. Nothing secret is entered here: the gateway verifies the IdP's signature and maps the client to this agent. */
+export function AddOAuthClientDialog({ agentId, agentName, status, onClose }: { agentId: string; agentName: string; status: AgentOAuthStatus; onClose: () => void }) {
+  const [issuer, setIssuer] = useState(status.issuers[0]?.issuer || '')
+  const [name, setName] = useState('OAuth client')
+  const [subject, setSubject] = useState('')
+  const [scopes, setScopes] = useState<string[]>(SCOPES.map(s => s.value))
+  const [expires, setExpires] = useState('')
+  const qc = useQueryClient()
+  const toast = useToast()
+  const claim = status.issuers.find(i => i.issuer === issuer)?.subject_claim || 'sub'
+  const m = useMutation({
+    mutationFn: () => api.post<Credential>('/auth/agent-oauth-clients', {
+      agent_id: agentId, name, issuer, subject: subject.trim(), scopes, expires_at: expires ? new Date(expires).toISOString() : null }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['agent', agentId] }); qc.invalidateQueries({ queryKey: ['agents'] }); toast.ok('OAuth credential added'); onClose() },
+    onError: e => toast.error(e),
+  })
+  return (
+    <Modal title={`OAuth client for ${agentName}`} onClose={onClose} footer={<>
+      <button className="btn secondary" onClick={onClose}>Cancel</button>
+      <button className="btn primary" disabled={!issuer || !subject.trim() || !scopes.length || m.isPending} onClick={() => m.mutate()}>{m.isPending && <Loader2 size={13} className="spin" />}Add OAuth client</button>
+    </>}>
+      <Field label="Name"><input value={name} onChange={e => setName(e.target.value)} /></Field>
+      <Field label="Identity provider"><select value={issuer} onChange={e => setIssuer(e.target.value)}>{status.issuers.map(i => <option key={i.issuer} value={i.issuer}>{i.display_name}</option>)}</select></Field>
+      <Field label={`Client (token claim "${claim}")`} hint="Usually the client ID of the agent's application registration at the identity provider.">
+        <input className="mono" value={subject} onChange={e => setSubject(e.target.value)} placeholder="hr-bot" /></Field>
+      <div className="field"><span>Scopes</span>{SCOPES.map(s => <label className="check" key={s.value}><input type="checkbox" checked={scopes.includes(s.value)} onChange={e => setScopes(e.target.checked ? [...scopes, s.value] : scopes.filter(x => x !== s.value))} />{s.label}</label>)}</div>
+      <Field label="Expires (optional)"><input type="datetime-local" value={expires} onChange={e => setExpires(e.target.value)} /></Field>
+      <Callout>The agent gets an access token from its identity provider (client credentials) and sends it as <span className="mono">Authorization: Bearer</span>. Its secret or key stays with the identity provider and the agent.</Callout>
     </Modal>
   )
 }

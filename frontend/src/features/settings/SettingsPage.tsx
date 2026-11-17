@@ -7,6 +7,7 @@ import { cn, timeAgo } from '../../services/format'
 import type { HealthComponent } from '../../services/types'
 import { Badge, Callout, Field, JsonView, PageHeading, Panel, QueryState, Status, useToast } from '../../components/ui'
 import { SiemSettings } from './SiemSettings'
+import { AgentOAuthSettings } from './AgentOAuthSettings'
 import { LdapSettings } from './LdapSettings'
 import { SsoSettings } from './SsoSettings'
 
@@ -22,16 +23,16 @@ interface SettingsResp {
   stored: Record<string, any>; tenant: Record<string, any>; health: HealthComponent[]; editable: boolean
 }
 
-type Section = 'general' | 'security' | 'sso' | 'ldap' | 'siem' | 'limits' | 'network' | 'account' | 'health'
+type Section = 'general' | 'security' | 'sso' | 'ldap' | 'agent-oauth' | 'siem' | 'limits' | 'network' | 'account' | 'health'
 const SECTIONS: { value: Section; label: string }[] = [
-  { value: 'general', label: 'General & MCP endpoint' }, { value: 'security', label: 'Security' }, { value: 'sso', label: 'Single sign-on' }, { value: 'ldap', label: 'LDAP / Active Directory' }, { value: 'siem', label: 'SIEM forwarding' }, { value: 'limits', label: 'Payload & global limits' },
+  { value: 'general', label: 'General & MCP endpoint' }, { value: 'security', label: 'Security' }, { value: 'sso', label: 'Single sign-on' }, { value: 'ldap', label: 'LDAP / Active Directory' }, { value: 'agent-oauth', label: 'Agent OAuth' }, { value: 'siem', label: 'SIEM forwarding' }, { value: 'limits', label: 'Payload & global limits' },
   { value: 'network', label: 'Network allowlists' }, { value: 'account', label: 'My account' }, { value: 'health', label: 'System health' },
 ]
 
 export function SettingsPage() {
   const [section, setSection] = useState<Section>('general')
   const { me } = useAuth()
-  const sections = SECTIONS.filter(s => !['sso', 'ldap', 'siem'].includes(s.value) || me?.is_platform_admin)
+  const sections = SECTIONS.filter(s => !['sso', 'ldap', 'agent-oauth', 'siem'].includes(s.value) || me?.is_platform_admin)
   const q = useQuery({ queryKey: ['settings'], queryFn: () => api.get<SettingsResp>('/settings') })
   return (
     <>
@@ -39,7 +40,7 @@ export function SettingsPage() {
       <div className="settings-layout">
         <div className="settings-tabs">{sections.map(s => <button key={s.value} className={cn(section === s.value && 'selected')} onClick={() => setSection(s.value)}>{s.label}</button>)}</div>
         <div className="settings-form" style={{ maxWidth: 820 }}>
-          {section === 'account' ? <Account /> : section === 'sso' ? <SsoSettings /> : section === 'ldap' ? <LdapSettings /> : section === 'siem' ? <SiemSettings /> : <QueryState q={q}>{d => <SettingsSection section={section} d={d} />}</QueryState>}
+          {section === 'account' ? <Account /> : section === 'sso' ? <SsoSettings /> : section === 'ldap' ? <LdapSettings /> : section === 'agent-oauth' ? <AgentOAuthSettings /> : section === 'siem' ? <SiemSettings /> : <QueryState q={q}>{d => <SettingsSection section={section} d={d} />}</QueryState>}
         </div>
       </div>
     </>

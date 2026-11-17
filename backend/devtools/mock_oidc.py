@@ -56,6 +56,9 @@ class MockIdP:
     codes: dict[str, dict[str, Any]] = field(default_factory=dict)
     access_tokens: dict[str, str] = field(default_factory=dict)
     token_requests: int = 0
+    # OAuth for agents: confidential clients for the client-credentials grant, and the gateway's API audience.
+    agent_clients: dict[str, str] = field(default_factory=lambda: {"hr-bot": "hr-bot-secret"})
+    api_audience: str = "api://mcp-gateway"
 
     def reset(self) -> None:
         self.tamper.clear()
@@ -68,6 +71,19 @@ class MockIdP:
     def jwk(self) -> dict[str, Any]:
         pub = json.loads(jwt.algorithms.RSAAlgorithm.to_jwk(self.key.public_key()))
         return {**pub, "kid": self.kid, "use": "sig", "alg": "RS256"}
+
+    def access_token(self, client_id: str, *, lifetime: int = 300, key: Any = None, headers: dict[str, Any] | None = None,
+                     **claims: Any) -> str:
+        """An RFC 9068 access token for a client (client-credentials grant). ``claims`` override the defaults;
+        a value of None removes the claim."""
+        now = int(time.time())
+        body: dict[str, Any] = {"iss": self.issuer, "sub": client_id, "azp": client_id, "client_id": client_id,
+                                "aud": self.api_audience, "iat": now, "exp": now + lifetime,
+                                "jti": secrets.token_urlsafe(12), "scope": "mcp.tools"}
+        body.update(claims)
+        body = {k: v for k, v in body.items() if v is not None}
+        return jwt.encode(body, key or self.key, algorithm="RS256",
+                          headers={"kid": self.kid, "typ": "at+jwt", **(headers or {})})
 
     def id_token(self, user: dict[str, Any], nonce: str) -> str:
         now = int(time.time())
@@ -144,6 +160,11 @@ def build_app(idp: MockIdP) -> Starlette:
 
             cid, _, sec = base64.b64decode(auth[6:]).decode().partition(":")
             client_id, secret = unquote(cid), unquote(sec)
+        if form.get("grant_type") == "client_credentials":
+            if not client_id or idp.agent_clients.get(str(client_id)) != secret:
+                return JSONResponse({"error": "invalid_client"}, status_code=401)
+            return JSONResponse({"access_token": idp.access_token(str(client_id)), "token_type": "Bearer",
+                                 "expires_in": 300})
         if client_id != idp.client_id or secret != idp.client_secret:
             return JSONResponse({"error": "invalid_client"}, status_code=401)
         entry = idp.codes.pop(str(form.get("code", "")), None)  # single use
