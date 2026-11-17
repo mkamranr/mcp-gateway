@@ -86,7 +86,11 @@ function ServerDetail({ s }: { s: Server }) {
       {tab === 'config' && <Panel title="Connection configuration" subtitle="Secrets are write-only. The API reports only whether one is stored.">
         <dl className="kv">
           <dt>Transport</dt><dd>{s.transport}</dd>
-          {s.transport === 'streamable_http' ? <><dt>Endpoint</dt><dd className="mono">{s.endpoint}</dd><dt>TLS verification</dt><dd>{s.verify_tls ? 'Enabled' : <Badge color="red">Disabled</Badge>}</dd></>
+          {s.transport === 'streamable_http' ? <><dt>Endpoint</dt><dd className="mono">{s.endpoint}</dd><dt>TLS verification</dt><dd>{s.verify_tls ? 'Enabled' : <Badge color="red">Disabled</Badge>}</dd>
+            <dt>Server CA</dt><dd>{s.tls?.ca_certificates.length ? s.tls.ca_certificates.map(c => <div key={c.fingerprint_sha256}>{c.subject} <span className="muted">· expires {dateTime(c.not_after)}</span></div>) : <span className="muted">standard public CAs</span>}</dd>
+            <dt>Client certificate</dt><dd>{s.tls?.client_certificate
+              ? <><div>{s.tls.client_certificate.subject} <Badge color="green">key stored</Badge></div><div className="muted">Issuer {s.tls.client_certificate.issuer} · expires {dateTime(s.tls.client_certificate.not_after)}</div><div className="mono muted">SHA-256 {s.tls.client_certificate.fingerprint_sha256.slice(0, 32)}…</div></>
+              : <span className="muted">none (mTLS not used)</span>}</dd></>
             : <><dt>Command</dt><dd className="mono">{s.command}</dd><dt>Arguments</dt><dd className="mono">{s.args.join(' ') || '-'}</dd><dt>Working dir</dt><dd className="mono">{s.cwd || '-'}</dd><dt>Environment keys</dt><dd className="mono">{s.env_keys.join(', ') || '-'}</dd></>}
           <dt>Authentication</dt><dd>{s.authentication_mode} {s.has_secret && <Badge color="green">secret stored</Badge>}</dd>
           <dt>Timeouts</dt><dd>{s.connection_timeout_seconds}s connect · {s.request_timeout_seconds}s request</dd>

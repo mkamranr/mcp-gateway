@@ -45,7 +45,9 @@ Roles: P = platform_admin, T = tenant_admin, S = security_admin, A = approver, U
 | POST | `/auth/agent-keys` | P T S | `{agent_id, name, scopes[], expires_at?}` → includes `secret` **once** |
 | GET | `/auth/agent-keys?agent_id=` | any | never includes secrets or hashes |
 | POST | `/auth/agent-keys/{id}/rotate` | P T S | new key (secret once). The old key is revoked. |
-| POST | `/auth/agent-keys/{id}/revoke` | P T S | `{reason}` |
+| POST | `/auth/agent-keys/{id}/revoke` | P T S | `{reason}`. Revokes certificate credentials too. |
+| GET | `/auth/agent-certificates/status` | any | `{enabled, trusted_cas[]}`: whether client certificates are accepted, and from which CAs |
+| POST | `/auth/agent-certificates` | P T S | `{agent_id, name, scopes[], expires_at?}` plus exactly one of `subject_name` (a SAN: URI or DNS name) or `certificate_pem` (pin it). Nothing secret is returned or stored. Listed with the keys (`type: client_certificate`); not rotatable. See [mtls.md](mtls.md). |
 | POST | `/emergency/revoke-all-credentials` | P T S | `{reason}` → `{revoked: n}`. High-severity audit event. |
 
 ### Tenants, users, agents
@@ -62,7 +64,7 @@ Roles: P = platform_admin, T = tenant_admin, S = security_admin, A = approver, U
 ### Registry
 | Method | Path | Who | Notes |
 |---|---|---|---|
-| GET/POST | `/servers` | any / P T D | `transport: streamable_http \| stdio`. `secret` is write-only. |
+| GET/POST | `/servers` | any / P T D | `transport: streamable_http \| stdio`. `secret` is write-only. Optional `tls_ca_pem` and `client_certificate: {cert_pem, key_pem}` (key write-only); PATCH also takes `remove_client_certificate`. Responses include `tls: {ca_certificates[], client_certificate}` (metadata only). |
 | GET/PATCH/DELETE | `/servers/{id}` | any / P T D / P T | DELETE archives the server |
 | POST | `/servers/{id}/enable` \| `/disable` | P T S | |
 | POST | `/servers/{id}/test` | P T D S | `{healthy, status, latency_ms, error, tool_count}` |

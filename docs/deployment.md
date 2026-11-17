@@ -72,6 +72,11 @@ Either terminate TLS at a load balancer in front of `web-ui` and forward to it o
 mount a certificate into `web-ui` and add a `listen 8443 ssl` server block. Keep `COOKIE_SECURE=true`. With
 plain HTTP, browsers drop the `__Host-` session cookie.
 
+For agents that authenticate with **client certificates**, mount the ready-made agent mTLS listener
+(`deploy/mtls/agent-mtls.conf`) into `web-ui` at `/etc/nginx/mtls/`; see [mutual TLS](mtls.md). `web-ui` and
+`gateway-api` share a dedicated `edge` network (`MGW_EDGE_SUBNET`, default `172.31.250.0/24`); change the subnet
+if it clashes with a network on your host.
+
 ## Updating
 
 ```bash

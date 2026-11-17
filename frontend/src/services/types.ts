@@ -36,6 +36,11 @@ export interface SsoTestResult {
   signing_algorithms?: string[]; algorithm_overlap?: string[] | null
 }
 
+export interface CertInfo {
+  fingerprint_sha256: string; subject: string; issuer: string; serial: string
+  not_before: string; not_after: string; sans: string[]
+}
+
 export interface HealthEntry { at: string; status: string; latency_ms: number; error: string | null }
 
 export interface Server {
@@ -48,6 +53,7 @@ export interface Server {
   last_health_error: string | null; last_latency_ms: number | null; health_history: HealthEntry[]
   discovery: { status?: string; at?: string; error?: string; summary?: Record<string, number> }
   tool_count: number; enabled_tool_count: number; version: number
+  tls?: { ca_certificates: CertInfo[]; client_certificate: CertInfo | null }
   created_at: string; updated_at: string; created_by: string; updated_by: string
 }
 
@@ -109,7 +115,9 @@ export interface Decision {
 }
 
 export interface Credential {
-  id: string; name: string; principal_id: string; key_prefix: string; scopes: string[]
+  id: string; name: string; principal_id: string; scopes: string[]
+  type: 'api_key' | 'client_certificate'; key_prefix: string | null
+  certificate: CertInfo | null; subject_name: string | null
   expires_at: string | null; revoked_at: string | null; last_used_at: string | null
   last_used_source: string | null; created_at: string; created_by: string; status: 'active' | 'revoked' | 'expired'
   secret?: string

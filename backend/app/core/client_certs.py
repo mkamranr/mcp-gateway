@@ -16,10 +16,11 @@ import tempfile
 import urllib.parse
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from typing import Any
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
+from cryptography.x509.oid import ExtendedKeyUsageOID
 
 PEM_HEADER = "-----BEGIN CERTIFICATE-----"
 MAX_HEADER_BYTES = 16_384
@@ -66,11 +67,11 @@ def load_certificate(pem: str) -> x509.Certificate:
 
 def describe(cert: x509.Certificate) -> CertInfo:
     try:
-        san = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
-        uris = tuple(san.get_values_for_type(x509.UniformResourceIdentifier))
-        dns = tuple(san.get_values_for_type(x509.DNSName))
-    except x509.ExtensionNotFound:
-        uris, dns = (), ()
+        san = _extension(cert, x509.SubjectAlternativeName)
+    except CertificateError:
+        san = None  # informational here; verify() rejects such a client certificate before matching
+    uris = tuple(san.get_values_for_type(x509.UniformResourceIdentifier)) if san else ()
+    dns = tuple(san.get_values_for_type(x509.DNSName)) if san else ()
     return CertInfo(
         fingerprint_sha256=cert.fingerprint(hashes.SHA256()).hex(),
         subject=cert.subject.rfc4514_string(), issuer=cert.issuer.rfc4514_string(),
@@ -79,9 +80,15 @@ def describe(cert: x509.Certificate) -> CertInfo:
     )
 
 
-def common_name(cert: x509.Certificate) -> str | None:
-    attrs = cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
-    return str(attrs[0].value) if attrs else None
+def _extension(cert: x509.Certificate, cls: type[x509.ExtensionType]) -> Any:
+    """One extension's value, or None if absent. Certificates with unparseable or duplicate extensions (OpenSSL
+    1.1.1's ``-addext`` writes duplicates, for one) raise CertificateError instead of an unhandled error."""
+    try:
+        return cert.extensions.get_extension_for_class(cls).value
+    except x509.ExtensionNotFound:
+        return None
+    except (x509.DuplicateExtension, ValueError) as exc:
+        raise CertificateError("The certificate has malformed or duplicate extensions.") from exc
 
 
 def decode_forwarded(value: str) -> x509.Certificate:
@@ -122,17 +129,12 @@ class ClientCertVerifier:
             raise CertificateError("The issuing CA certificate is not valid now.")
         if not (cert.not_valid_before_utc <= now <= cert.not_valid_after_utc):
             raise CertificateError("The client certificate is expired or not yet valid.")
-        try:
-            eku = cert.extensions.get_extension_for_class(x509.ExtendedKeyUsage).value
-            if ExtendedKeyUsageOID.CLIENT_AUTH not in eku and ExtendedKeyUsageOID.ANY_EXTENDED_KEY_USAGE not in eku:
-                raise CertificateError("The certificate is not valid for client authentication.")
-        except x509.ExtensionNotFound:
-            pass  # no EKU extension: any usage
-        try:
-            if cert.extensions.get_extension_for_class(x509.BasicConstraints).value.ca:
-                raise CertificateError("A CA certificate can't be used as a client certificate.")
-        except x509.ExtensionNotFound:
-            pass
+        eku = _extension(cert, x509.ExtendedKeyUsage)  # absent: any usage
+        if eku is not None and ExtendedKeyUsageOID.CLIENT_AUTH not in eku                 and ExtendedKeyUsageOID.ANY_EXTENDED_KEY_USAGE not in eku:
+            raise CertificateError("The certificate is not valid for client authentication.")
+        constraints = _extension(cert, x509.BasicConstraints)
+        if constraints is not None and constraints.ca:
+            raise CertificateError("A CA certificate can't be used as a client certificate.")
         return describe(cert)
 
 

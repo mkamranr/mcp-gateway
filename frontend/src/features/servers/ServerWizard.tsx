@@ -16,6 +16,7 @@ interface Form {
   authentication_mode: 'none' | 'bearer' | 'header' | 'env'; token: string; header_name: string; secretEnv: string
   connection_timeout_seconds: number; request_timeout_seconds: number; max_concurrent_calls: number
   allow_private_network: boolean; enabled: boolean
+  tls_ca_pem: string; clear_ca: boolean; client_cert_pem: string; client_key_pem: string; remove_client_cert: boolean
 }
 
 function initial(s?: Server): Form {
@@ -26,6 +27,7 @@ function initial(s?: Server): Form {
     authentication_mode: (s?.authentication_mode as Form['authentication_mode']) || 'none', token: '', header_name: '', secretEnv: '',
     connection_timeout_seconds: s?.connection_timeout_seconds ?? 10, request_timeout_seconds: s?.request_timeout_seconds ?? 30,
     max_concurrent_calls: s?.max_concurrent_calls ?? 10, allow_private_network: s?.allow_private_network ?? false, enabled: s?.enabled ?? true,
+    tls_ca_pem: '', clear_ca: false, client_cert_pem: '', client_key_pem: '', remove_client_cert: false,
   }
 }
 
@@ -52,6 +54,11 @@ function stepErrors(f: Form, step: number, editing: boolean): string[] {
   if (step === 2 && f.authentication_mode !== 'none' && !editing) {
     if (f.authentication_mode === 'env' ? !f.secretEnv.trim() : !f.token) e.push('Provide the credential for this authentication mode.')
     if (f.authentication_mode === 'header' && !f.header_name) e.push('Header name is required.')
+  }
+  if (step === 2 && f.transport === 'streamable_http') {
+    if (Boolean(f.client_cert_pem.trim()) !== Boolean(f.client_key_pem.trim())) e.push('A client certificate needs both the certificate and its private key.')
+    if (f.client_cert_pem.trim() && !f.client_cert_pem.includes('BEGIN CERTIFICATE')) e.push('The client certificate must be PEM.')
+    if (f.tls_ca_pem.trim() && !f.tls_ca_pem.includes('BEGIN CERTIFICATE')) e.push('The CA bundle must be PEM certificates.')
   }
   return e
 }
@@ -84,6 +91,11 @@ export function ServerWizard({ server, onClose, onSaved }: { server?: Server; on
         max_concurrent_calls: f.max_concurrent_calls, allow_private_network: f.allow_private_network,
         ...(f.transport === 'streamable_http' ? { endpoint: f.endpoint } : { command: f.command, args: f.args, cwd: f.cwd || null, ...(f.envPairs.trim() ? { env: parsePairs(f.envPairs) } : {}) }),
         ...(secret ? { secret } : {}),
+        ...(f.transport === 'streamable_http' ? {
+          ...(f.tls_ca_pem.trim() ? { tls_ca_pem: f.tls_ca_pem.trim() } : editing && f.clear_ca ? { tls_ca_pem: '' } : {}),
+          ...(f.client_cert_pem.trim() ? { client_certificate: { cert_pem: f.client_cert_pem.trim(), key_pem: f.client_key_pem.trim() } } : {}),
+          ...(editing && f.remove_client_cert && !f.client_cert_pem.trim() ? { remove_client_certificate: true } : {}),
+        } : {}),
       }
       if (editing) return api.patch<Server>(`/servers/${server!.id}`, { version: server!.version, name: f.name, ...common })
       return api.post<Server>('/servers', { name: f.name, alias: f.alias, transport: f.transport, enabled: f.enabled, ...common })
@@ -163,6 +175,22 @@ export function ServerWizard({ server, onClose, onSaved }: { server?: Server; on
           <Field label="Token" hint="Encrypted with AES-GCM at rest. It is never shown again or returned by the API."><input type="password" autoComplete="new-password" value={f.token} onChange={e => set('token', e.target.value)} /></Field>}
         {f.authentication_mode === 'env' &&
           <Field label="Secret environment (KEY=value per line)" hint="Encrypted at rest and injected only into the server process."><textarea value={f.secretEnv} onChange={e => set('secretEnv', e.target.value)} /></Field>}
+        {f.transport === 'streamable_http' && <>
+          <div className="section-title">Mutual TLS (optional)</div>
+          <Field label="CA bundle for this server's certificate" hint={editing && server?.tls?.ca_certificates.length
+            ? `Currently: ${server.tls.ca_certificates.map(c => c.subject).join('; ')}. Leave blank to keep.`
+            : 'For servers with a certificate from an internal CA. Default: the standard public CAs.'}>
+            <textarea className="mono" rows={3} value={f.tls_ca_pem} onChange={e => set('tls_ca_pem', e.target.value)} placeholder="-----BEGIN CERTIFICATE-----" /></Field>
+          {editing && !!server?.tls?.ca_certificates.length && <label className="check"><input type="checkbox" checked={f.clear_ca} onChange={e => set('clear_ca', e.target.checked)} />Remove the custom CA bundle</label>}
+          {editing && server?.tls?.client_certificate && <Callout kind="ok">The gateway presents <b>{server.tls.client_certificate.subject}</b> (expires {new Date(server.tls.client_certificate.not_after).toLocaleDateString()}). Enter a new pair to replace it.</Callout>}
+          <div className="field-row">
+            <Field label="Client certificate (PEM)" hint="Presented when the server requires mTLS. Chain certificates may follow it.">
+              <textarea className="mono" rows={4} value={f.client_cert_pem} onChange={e => set('client_cert_pem', e.target.value)} placeholder="-----BEGIN CERTIFICATE-----" /></Field>
+            <Field label="Private key (PEM, unencrypted)" hint="Write-only: encrypted with AES-GCM at rest and never returned by the API.">
+              <textarea className="mono" rows={4} autoComplete="off" spellCheck={false} value={f.client_key_pem} onChange={e => set('client_key_pem', e.target.value)} placeholder="-----BEGIN PRIVATE KEY-----" /></Field>
+          </div>
+          {editing && server?.tls?.client_certificate && <label className="check"><input type="checkbox" checked={f.remove_client_cert} onChange={e => set('remove_client_cert', e.target.checked)} />Remove the client certificate</label>}
+        </>}
       </>}
 
       {step === 3 && <div className="field-row">
@@ -187,6 +215,7 @@ export function ServerWizard({ server, onClose, onSaved }: { server?: Server; on
           <dt>Authentication</dt><dd>{f.authentication_mode}{(f.token || f.secretEnv) ? ' (new secret provided)' : ''}</dd>
           <dt>Limits</dt><dd>{f.connection_timeout_seconds}s connect · {f.request_timeout_seconds}s request · {f.max_concurrent_calls} concurrent</dd>
           <dt>TLS / network</dt><dd>{f.verify_tls ? 'verify TLS' : 'NO TLS verification'} · {f.allow_private_network ? 'private network allowed' : 'public addresses only'}</dd>
+          {f.transport === 'streamable_http' && <><dt>Mutual TLS</dt><dd>{f.client_cert_pem.trim() ? 'new client certificate provided' : f.remove_client_cert ? 'client certificate removed' : server?.tls?.client_certificate ? 'client certificate kept' : 'no client certificate'}{f.tls_ca_pem.trim() ? ' · custom CA bundle' : ''}</dd></>}
         </dl>
       </>}
 

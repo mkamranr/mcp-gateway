@@ -254,3 +254,63 @@ def test_settings_require_a_narrow_proxy_allowlist(settings, proxies, error):
     with pytest.raises(ValueError, match=error):
         Settings(**{**settings.model_dump(), "mtls_client_ca_file": settings.mtls_client_ca_file,
                     "mtls_trusted_proxies": proxies})
+
+
+# Real OpenSSL 1.1.1 output: "req -x509 -addext basicConstraints=..." writes basicConstraints twice. OpenSSL and
+# nginx accept such certificates; the gateway must handle them instead of failing with a 500.
+LEGACY_CA = """\n-----BEGIN CERTIFICATE-----
+MIIBjTCCATSgAwIBAgIUab0Iuoc+wCHTDgDEMqymS75TdD8wCgYIKoZIzj0EAwIw
+FDESMBAGA1UEAwwJTGVnYWN5IENBMB4XDTI2MTExNzA0NTEwN1oXDTM2MTExNDA0
+NTEwN1owFDESMBAGA1UEAwwJTGVnYWN5IENBMFkwEwYHKoZIzj0CAQYIKoZIzj0D
+AQcDQgAExjREgcdvNr+jy+iWp+DJ7fwCv1pOz7myyHZT1BMZTj7zZUig7034sBck
+Ce3IxjoFFuHsFeAkLS39yKImaAuGeaNkMGIwHQYDVR0OBBYEFBgOw7eGXXfGAeCO
+QrwSFmw71Qt7MB8GA1UdIwQYMBaAFBgOw7eGXXfGAeCOQrwSFmw71Qt7MA8GA1Ud
+EwEB/wQFMAMBAf8wDwYDVR0TAQH/BAUwAwEB/zAKBggqhkjOPQQDAgNHADBEAiBe
+x5zvQ0xyiwD1JBUo9N0ad0xuXoJEjo000D0qDcQmjgIgbW9FtwbT9bdkkI/vSEm4
+Qtf9CyIUxp5gE3WxHhVfCwg=
+-----END CERTIFICATE-----
+"""
+LEGACY_LEAF = """\n-----BEGIN CERTIFICATE-----
+MIIBYjCCAQigAwIBAgIUORMsGhGLtVNXSXtufOqRjrWzwzEwCgYIKoZIzj0EAwIw
+FDESMBAGA1UEAwwJTGVnYWN5IENBMB4XDTI2MTExNzA0NTEwN1oXDTM2MTExNDA0
+NTEwN1owEzERMA8GA1UEAwwIZHVwLWxlYWYwWTATBgcqhkjOPQIBBggqhkjOPQMB
+BwNCAAQhnkId+9tXdH4GLbp6G9RwX9d2DbGcp4xf6LacKd0jVcicWDGVel63NJNz
+Uk9scPn46zm4963FDw6znl/+TflNozkwNzATBgNVHSUEDDAKBggrBgEFBQcDAjAg
+BgNVHREEGTAXhhVzcGlmZmU6Ly9sZWdhY3kvYWdlbnQwCgYIKoZIzj0EAwIDSAAw
+RQIhAOf7ilQSrjKYmuasmAp8hk1dC4wXir10xjxsLZfkc1sSAiA+yHloFHSpShdg
+L7sza7Qy1OZZHExem9RBlrFFOVqlVw==
+-----END CERTIFICATE-----
+"""
+SELF_SIGNED_DUPLICATE = """\n-----BEGIN CERTIFICATE-----
+MIIBmzCCAUKgAwIBAgIUXu+FK+VkKBbHmTYnVu/OZawvBU0wCgYIKoZIzj0EAwIw
+EjEQMA4GA1UEAwwHc2VsZmR1cDAeFw0yNjExMTcwNDUxMjFaFw0zNjExMTQwNDUx
+MjFaMBIxEDAOBgNVBAMMB3NlbGZkdXAwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNC
+AAQhnkId+9tXdH4GLbp6G9RwX9d2DbGcp4xf6LacKd0jVcicWDGVel63NJNzUk9s
+cPn46zm4963FDw6znl/+TflNo3YwdDAdBgNVHQ4EFgQUHR9DXf9X5G225dxIEAkC
+INUHTNkwHwYDVR0jBBgwFoAUHR9DXf9X5G225dxIEAkCINUHTNkwDwYDVR0TAQH/
+BAUwAwEB/zAMBgNVHRMBAf8EAjAAMBMGA1UdJQQMMAoGCCsGAQUFBwMCMAoGCCqG
+SM49BAMCA0cAMEQCIBHv1Zjot57Aqsh6Iv5/JA6Bsp5vhLmSHrzblvZHgcBEAiB9
+aAXiR3EfdbUjIYruFUdEz3TyWk6K37eLiQIXKnmy8w==
+-----END CERTIFICATE-----
+"""
+
+
+def test_certificates_with_duplicate_extensions_are_handled_not_500():
+    from cryptography import x509
+
+    from app.core.client_certs import CertificateError, ClientCertVerifier, describe
+
+    legacy = ClientCertVerifier(LEGACY_CA)
+    assert "Legacy CA" in describe(legacy.cas[0]).subject  # readable for display despite the duplicate
+    leaf = x509.load_pem_x509_certificate(LEGACY_LEAF.encode())
+    assert legacy.verify(leaf).sans == ("spiffe://legacy/agent",)  # it can still issue agent certificates
+    dup = x509.load_pem_x509_certificate(SELF_SIGNED_DUPLICATE.encode())
+    with pytest.raises(CertificateError, match="duplicate extensions"):
+        ClientCertVerifier(SELF_SIGNED_DUPLICATE).verify(dup)  # a client certificate like that is refused cleanly
+
+
+async def test_legacy_ca_bundle_registers_and_reports(admin):
+    r = await admin.post("/api/v1/servers", json={"name": "Legacy CA HR", "alias": "lhr", "transport": "streamable_http",
+                                                  "endpoint": "https://hr.internal.example/mcp", "tls_ca_pem": LEGACY_CA})
+    assert r.status_code == 201, r.text
+    assert "Legacy CA" in r.json()["tls"]["ca_certificates"][0]["subject"]

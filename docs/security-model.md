@@ -6,6 +6,7 @@
 |---|---|---|---|
 | **User** (human) | username + password → server-side session | Argon2id hash; session in Redis keyed by SHA-256 of the session ID | Cookie `__Host-mgw_session` (HttpOnly, Secure, SameSite=Strict). Unsafe methods need `X-CSRF-Token` to match the `mgw_csrf` cookie (double submit). Login is throttled per user and IP: failed attempts count, successful ones don't. Sessions have absolute and idle timeouts. |
 | **Agent** | API key `mgw_live_<16-hex public id>_<secret>` | HMAC-SHA256(pepper) of the key; only the prefix is stored in clear | Shown **once** at creation or rotation. Constant-time comparison. Scopes: `tools:list`, `tools:invoke`, `approvals:read`. Optional expiry. Revocable individually, per agent, or all at once (emergency). |
+| **Agent** (optional) | X.509 client certificate, through a TLS proxy | nothing secret: the SHA-256 fingerprint (pinned) or a SAN to match | The proxy's handshake proves possession of the key. The forwarded certificate is accepted only from `MTLS_TRUSTED_PROXIES`, and re-checked against `MTLS_CLIENT_CA_FILE` (issuer, validity dates, client-auth usage). Same scopes, expiry and revocation as keys. See [mtls.md](mtls.md). |
 
 User sessions cannot call `/mcp`, and agent keys cannot call administrative routes.
 
@@ -124,12 +125,15 @@ development only and is ignored in production.
   passed verbatim and checked for shell metacharacters. Dangerous environment variables (`LD_PRELOAD`,
   `PYTHONPATH`, …) are refused.
 - Upstream errors are sanitized. Endpoints, stack traces and credentials never reach agents.
+- Per server: a custom CA bundle for the upstream's certificate, and a client certificate for upstreams that
+  require mTLS. The private key is write-only and encrypted ([mtls.md](mtls.md#upstream-servers-that-require-mtls)).
 
 ## Secrets and cryptography
 
 | Secret | Protection |
 |---|---|
 | Upstream credentials | AES-256-GCM, AD = `<tenant>:<secret id>`, in the `secrets` collection. The API returns only `has_secret`. |
+| Upstream client-certificate keys | Same as upstream credentials. The API returns only the certificate's subject, issuer, expiry and fingerprint. |
 | Approval arguments and results | AES-256-GCM, AD bound to the approval |
 | Agent keys | HMAC-SHA256 with `API_KEY_HASH_PEPPER` |
 | Passwords | Argon2id |
