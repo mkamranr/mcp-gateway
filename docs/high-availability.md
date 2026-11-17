@@ -113,19 +113,26 @@ that means a few quota increments (limits may admit slightly more calls than con
 created in that second (users sign in again), and approval jobs queued in that second. Those approvals are not
 lost: they stay `APPROVED` in MongoDB, and the worker re-queues approvals that have waited too long.
 
-**Approved calls across an outage.** Execution has one point of no return: the dispatch record written just
-before the upstream is called. If MongoDB or Redis fails before it, the approved call is handed back
-(`APPROVED`, audited as `approval.execution.deferred`) and retried, never aborted. If it fails after it, the
-call is never retried: it may have reached the upstream, so it is marked `FAILED` with a message saying the
-outcome could not be recorded. A claim left behind by a worker that died is returned after 5 minutes, but only
-if no dispatch record exists. Exactly once beats at least once here.
+**Approved calls across an outage.** Execution has one point of no return: the moment the tool call is sent
+to the upstream. If MongoDB or Redis fails before it (including while the dispatch record and its audit event
+are written), nothing was sent: the approved call is handed back (`APPROVED`, audited as
+`approval.execution.deferred`) and retried, never aborted, and the retry is not blocked by the first attempt's
+dispatch record. If it fails after it, the call is never retried: it may have reached the upstream. The worker
+keeps retrying its own state writes for up to 30 seconds, long enough to ride out an election, so the result is
+normally still recorded; if it can't be, the request is marked `FAILED` with a message saying the outcome could
+not be recorded.
+
+The worker sweeps claims that have been in progress for over 5 minutes (a worker died, or was cut off for
+longer than 30 seconds). With no dispatch record, the call never reached the upstream and goes back to
+`APPROVED`. With one, it may have, so it is marked `FAILED` (outcome unknown, audited as
+`approval.execution.failed`) and never run again. Exactly once beats at least once here; nothing stays stuck.
 
 **Verified in CI.** The `failover` job (`.github/failover/docker-compose.failover.yml`) runs this layout: a
 three-member replica set with keyfile auth and `w=majority`, a Redis master with two replicas and three
 Sentinels. Under steady load it kills the MongoDB primary, then the Redis master, with approvals in flight
 each time. It requires that every response is a success or a fail-closed 503 (no 500, no hang, no lost session),
 that the gateway recovers by itself within seconds without restarting a process, that every approved call
-completes and is dispatched exactly once, and that every successful call is in the audit log. Typical result:
+completes and reaches the upstream exactly once, and that every successful call is in the audit log. Typical result:
 one to three 503s out of about 450 requests per failover.
 
 **Load balancer.** Health-check `GET /healthz` on each web-ui (or `GET /health/ready` through it, which also

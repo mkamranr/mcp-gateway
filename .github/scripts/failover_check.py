@@ -11,7 +11,8 @@ What "verify" requires, after the failover:
   * every response was a success or a fail-closed, retryable 503 DEPENDENCY_UNAVAILABLE: no 500, no hang, no
     lost session, no wrong ACCESS_DENIED;
   * the gateway recovered on its own: the last RECOVERED_SECONDS of the load were all successes;
-  * every approved call completed, and was dispatched to the upstream exactly once;
+  * every approved call completed, and reached the upstream exactly once: exactly one completion and no failed
+    attempt (a deferred attempt may leave a dispatch event of its own; it never called the upstream);
   * every successful agent call has its completion in the audit log.
 """
 
@@ -184,14 +185,17 @@ def verify(base: str, state_file: str, load_out: str, approvals_out: str) -> Non
         if not doc:
             problems.append(f"approval {a} did not finish within 180 s")
             continue
-        events = admin.ok("GET", f"/api/v1/audit/events?approval_id={a}&event_type=tool.invocation.dispatched&limit=10")
-        dispatched = len(events["items"])
-        deferred = len(admin.ok("GET", f"/api/v1/audit/events?approval_id={a}&event_type=approval.execution.deferred&limit=50")["items"])
-        print(f"approval {a}: {doc['status']}, dispatched {dispatched}x, deferred {deferred}x")
+        def count(event: str, a: str = a) -> int:
+            return int(admin.ok("GET", f"/api/v1/audit/events?approval_id={a}&event_type={event}&limit=1")["total"])
+        completed = count("tool.invocation.completed")
+        failed = count("tool.invocation.failed") + count("tool.invocation.timed_out")
+        deferred = count("approval.execution.deferred")
+        print(f"approval {a}: {doc['status']}, upstream completions {completed}, failed attempts {failed}, "
+              f"deferred {deferred}x")
         if doc["status"] != "COMPLETED":
             problems.append(f"approval {a} ended {doc['status']}: {doc.get('execution')}")
-        if dispatched != 1:
-            problems.append(f"approval {a} was dispatched {dispatched} times")
+        if completed != 1 or failed:
+            problems.append(f"approval {a} reached the upstream {completed + failed} times")
 
     ok_calls = sum(1 for r in results if r["kind"] == "agent" and r["status"] == 200)
     window = (f"start={time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(t0 - 5))}"

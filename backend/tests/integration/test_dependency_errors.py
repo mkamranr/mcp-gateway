@@ -92,13 +92,83 @@ async def test_outage_after_dispatch_is_never_retried(scenario, app, container, 
     assert doc["execution"]["error_code"] == "DEPENDENCY_UNAVAILABLE"
     assert "sent to the upstream" in doc["execution"]["message"]
     assert await container.invocations.execute_approved(s.tenant_id, approval_id) == "not_claimed"
-    # Had even that write failed, the claim would sit in EXECUTING. The sweep sees the dispatch record and
-    # leaves it alone rather than run the call a second time.
+    # Had even that write failed, the claim would sit in EXECUTING. The sweep sees the dispatch record, so it
+    # resolves the request as FAILED (outcome unknown) rather than run the call a second time or leave it in limbo.
     await container.repos.approvals.col.update_one(
         {"_id": approval_id}, {"$set": {"status": "EXECUTING", "updated_at": utcnow() - timedelta(minutes=10)}})
-    assert await container.invocations.release_stale_claims() == 0
-    assert (await container.repos.approvals.get(s.tenant_id, approval_id))["status"] == "EXECUTING"
+    assert await container.invocations.release_stale_claims() == 1
+    doc = await container.repos.approvals.get(s.tenant_id, approval_id)
+    assert doc["status"] == "FAILED" and "sent to the upstream" in doc["execution"]["message"]
+    assert await container.repos.audit.col.find_one({"approval_id": approval_id,
+                                                     "event_type": "approval.execution.failed"})
+    assert await container.invocations.execute_approved(s.tenant_id, approval_id) == "not_claimed"
     assert mock_mcp_server.CALLS["send_email"] == 1
+
+
+@pytest.mark.parametrize("stage", ["dispatch_record", "dispatch_audit", "concurrency_slot"])
+async def test_outage_before_the_upstream_call_defers_even_after_the_dispatch_record(scenario, app, container,
+                                                                                   monkeypatch, stage):
+    """The election hits after the dispatch record is written but before the upstream is called (the case the
+    CI failover test caught). Nothing was sent, so the call is deferred, and the retry is not blocked by the
+    first attempt's dispatch record holding the idempotency key."""
+    s, approval_id = await _approved(scenario, app)
+    inv = container.invocations
+    failures = {"left": 1}
+
+    def failing_once(real):
+        async def wrapped(*a, **k):
+            if failures["left"]:
+                if stage == "dispatch_record":
+                    await real(*a, **k)  # the write lands, the acknowledgement is lost
+                failures["left"] -= 1
+                raise NotPrimaryError("election in progress")
+            return await real(*a, **k)
+        return wrapped
+
+    if stage == "dispatch_record":
+        real_record = inv._record_invocation
+
+        async def record(*a, **k):
+            if a[4] == "dispatched":
+                return await failing_once(real_record)(*a, **k)
+            return await real_record(*a, **k)
+        monkeypatch.setattr(inv, "_record_invocation", record)
+    elif stage == "dispatch_audit":
+        real_audit = container.audit.record
+
+        async def audit(tenant_id, event_type, *a, **k):
+            if event_type == "tool.invocation.dispatched":
+                return await failing_once(real_audit)(tenant_id, event_type, *a, **k)
+            return await real_audit(tenant_id, event_type, *a, **k)
+        monkeypatch.setattr(container.audit, "record", audit)
+    else:
+        monkeypatch.setattr(inv.clients, "_acquire_slot", failing_once(inv.clients._acquire_slot))
+
+    assert await inv.execute_approved(s.tenant_id, approval_id) == "DEFERRED"
+    assert mock_mcp_server.CALLS["send_email"] == 0
+    assert (await container.repos.approvals.get(s.tenant_id, approval_id))["status"] == "APPROVED"
+    assert await inv.execute_approved(s.tenant_id, approval_id) == "COMPLETED"
+    assert mock_mcp_server.CALLS["send_email"] == 1
+    holders = await container.repos.invocations.col.count_documents({"idempotency_key": f"approval:{approval_id}"})
+    assert holders == 1
+
+
+async def test_terminal_write_rides_out_a_short_election(scenario, app, container, monkeypatch):
+    """The upstream call succeeded and the primary steps down just then: the worker keeps retrying the
+    COMPLETED write until the new primary is elected, instead of leaving the request unresolved."""
+    s, approval_id = await _approved(scenario, app)
+    real, failures = container.repos.approvals.transition, {"left": 2}
+
+    async def transition(tenant_id, aid, from_status, to_status, *a, **k):
+        if to_status == "COMPLETED" and failures["left"]:
+            failures["left"] -= 1
+            raise NotPrimaryError("election in progress")
+        return await real(tenant_id, aid, from_status, to_status, *a, **k)
+
+    monkeypatch.setattr(container.repos.approvals, "transition", transition)
+    assert await container.invocations.execute_approved(s.tenant_id, approval_id) == "COMPLETED"
+    assert failures["left"] == 0 and mock_mcp_server.CALLS["send_email"] == 1
+    assert (await container.repos.approvals.get(s.tenant_id, approval_id))["status"] == "COMPLETED"
 
 
 async def test_claim_abandoned_before_dispatch_is_returned_and_runs_once(scenario, app, container):

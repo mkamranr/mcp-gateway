@@ -11,9 +11,12 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any
+
+import anyio
 
 from app.config import Settings
 from app.core.crypto import Encryptor
@@ -35,6 +38,30 @@ from app.services.validation_service import ValidationService
 log = get_logger(__name__)
 RESULT_RETENTION = timedelta(hours=24)
 SENSITIVE_RISK = {"high", "critical"}
+PERSIST_FOR_SECONDS = 30.0  # longer than a MongoDB election or a Sentinel failover
+OUTCOME_UNKNOWN = ("The call was sent to the upstream, but its outcome could not be recorded because a database was "
+                   "unavailable. It is not retried. Check the upstream system before requesting it again.")
+
+
+def _is_dependency_error(exc: BaseException) -> bool:
+    if isinstance(exc, GatewayError):
+        return exc.code == ErrorCode.DEPENDENCY_UNAVAILABLE
+    return isinstance(exc, DEPENDENCY_ERRORS)
+
+
+async def persist[T](op: Callable[[], Awaitable[T]], seconds: float = PERSIST_FOR_SECONDS) -> T:
+    """Run a state write, retrying it through a MongoDB election or Redis failover. Used by the approval worker,
+    where giving up would leave an approved call unresolved. Re-raises once ``seconds`` have passed."""
+    deadline, delay = time.monotonic() + seconds, 0.5
+    while True:
+        try:
+            return await op()
+        except Exception as exc:
+            if not _is_dependency_error(exc) or time.monotonic() + delay > deadline:
+                raise
+            log.warning("worker.write_retry", error=type(exc).__name__, retry_in=delay)
+            await anyio.sleep(delay)
+            delay = min(delay * 2, 4.0)
 
 
 @dataclass
@@ -114,8 +141,9 @@ class InvocationService:
         stage: dict[str, bool] | None = None,
     ) -> InvocationOutcome:
         """Run the full pipeline. ``stage["committed"]`` turns True at the point of no return: just before the
-        dispatch record is written and the upstream is called. A MongoDB or Redis outage before that point is
-        reported as DEPENDENCY_UNAVAILABLE with ``extra["before_dispatch"]`` True, so the caller may retry it."""
+        tool call is sent to the upstream. A MongoDB or Redis outage before that point is reported as
+        DEPENDENCY_UNAVAILABLE with ``extra["before_dispatch"]`` True: the upstream was not called, so the caller
+        may retry it."""
         stage = stage if stage is not None else {}
         stage.setdefault("committed", False)
         try:
@@ -271,8 +299,6 @@ class InvocationService:
             # 10. dispatch record + audit. Fail closed for sensitive tools if audit is unavailable.
             sensitive = tool.get("risk_level") in SENSITIVE_RISK
             idem = f"approval:{ctx.approval_id}" if ctx.approval_id else None
-            # Point of no return: from here on the call may reach the upstream, so it must never be retried.
-            stage["committed"] = True
             try:
                 await self._record_invocation(principal, inv_id, resource, decision.decision, "dispatched",
                                               args_hash, None, started, ctx, idempotency_key=idem)
@@ -293,6 +319,8 @@ class InvocationService:
                           self.settings.max_tool_timeout_seconds)
             try:
                 async with self.clients.limited_session(server) as adapter:
+                    # Point of no return: from here on the call may reach the upstream, so it is never retried.
+                    stage["committed"] = True
                     result = await adapter.call_tool(tool["upstream_name"], arguments, timeout)
             except UpstreamError as exc:
                 err = upstream_error_to_gateway(exc)
@@ -340,28 +368,57 @@ class InvocationService:
     async def _defer(self, tenant_id: str, approval_id: str, claimed: dict[str, Any], reason: str) -> str:
         """MongoDB or Redis failed before the upstream was called: hand the request back for a later retry.
 
-        Nothing ran, so this is safe. If even this write fails, the stale-claim sweep returns it later."""
+        Nothing ran, so this is safe. A dispatch record this attempt may have written is marked superseded, so it
+        no longer holds the approval's idempotency key. If even these writes fail, the stale-claim sweep returns
+        the request later (or, if the dispatch record is still there, resolves it as FAILED)."""
         try:
-            back = await self.repos.approvals.transition(tenant_id, approval_id, ["REVALIDATING", "EXECUTING"],
-                                                         "APPROVED", {"deferred_at": utcnow()})
+            await persist(lambda: self._supersede_dispatch(tenant_id, approval_id))
+            back = await persist(lambda: self.repos.approvals.transition(
+                tenant_id, approval_id, ["REVALIDATING", "EXECUTING"], "APPROVED", {"deferred_at": utcnow()}))
             if back:
-                await self.audit.record(tenant_id, "approval.execution.deferred",
-                                        principal={"type": "service", "id": "approval-worker"},
-                                        approval_id=approval_id, invocation_id=claimed.get("invocation_id"),
-                                        reason_code=ErrorCode.DEPENDENCY_UNAVAILABLE.value,
-                                        metadata={"error": reason})
+                await persist(lambda: self.audit.record(
+                    tenant_id, "approval.execution.deferred", principal={"type": "service", "id": "approval-worker"},
+                    approval_id=approval_id, invocation_id=claimed.get("invocation_id"),
+                    reason_code=ErrorCode.DEPENDENCY_UNAVAILABLE.value, metadata={"error": reason}))
         except Exception as exc:  # noqa: BLE001
             log.warning("approval.defer_failed", approval_id=approval_id, error=type(exc).__name__)
         return "DEFERRED"
 
+    async def _supersede_dispatch(self, tenant_id: str, approval_id: str) -> None:
+        """Release the idempotency key held by a dispatch record of an attempt that never reached the upstream.
+
+        Only called while this worker holds the claim, and an attempt that passed the point of no return never
+        hands the claim back, so every such record belongs to an attempt that was deferred."""
+        key = f"approval:{approval_id}"
+        async for d in self.repos.invocations.col.find(
+                {"tenant_id": tenant_id, "idempotency_key": key, "status": "dispatched"}, {"_id": 1}):
+            await self.repos.invocations.col.update_one(
+                {"_id": d["_id"], "tenant_id": tenant_id, "idempotency_key": key},
+                {"$set": {"status": "superseded", "idempotency_key": f"{key}:superseded:{d['_id']}",
+                          "updated_at": utcnow()}})
+
     async def release_stale_claims(self, older_than: timedelta = timedelta(minutes=5)) -> int:
-        """Return claims abandoned by a crashed worker (REVALIDATING/EXECUTING) to APPROVED, but only when the
-        approved call was provably never dispatched: no invocation carries its idempotency key."""
+        """Resolve claims abandoned by a crashed or cut-off worker (REVALIDATING/EXECUTING).
+
+        No dispatch record holds the approval's idempotency key: the call never reached the upstream, so it goes
+        back to APPROVED and runs later. A dispatch record exists: it may have reached the upstream, so it is
+        never run again; it is marked FAILED with the outcome unknown instead of being left in limbo."""
         cutoff, n = utcnow() - older_than, 0
         for d in await self.repos.approvals.stale_claims_global(cutoff):
             key = f"approval:{d['_id']}"
             if await self.repos.invocations.find_one(d["tenant_id"], {"idempotency_key": key}):
-                continue  # it may have reached the upstream: never run it again
+                failed = await self.repos.approvals.col.find_one_and_update(
+                    {"_id": d["_id"], "tenant_id": d["tenant_id"], "status": d["status"],
+                     "updated_at": d["updated_at"]},
+                    {"$set": {"status": "FAILED", "updated_at": utcnow(), "completed_at": utcnow(),
+                              "execution": {"error_code": ErrorCode.DEPENDENCY_UNAVAILABLE.value,
+                                            "message": OUTCOME_UNKNOWN}}})
+                if failed:
+                    n += 1
+                    await self.audit.record(d["tenant_id"], "approval.execution.failed", severity="high",
+                                            principal={"type": "service", "id": "worker"}, approval_id=d["_id"],
+                                            reason_code="OUTCOME_UNKNOWN", metadata={"from_status": d["status"]})
+                continue
             back = await self.repos.approvals.col.find_one_and_update(
                 {"_id": d["_id"], "tenant_id": d["tenant_id"], "status": d["status"], "updated_at": d["updated_at"]},
                 {"$set": {"status": "APPROVED", "updated_at": utcnow(), "deferred_at": utcnow()}})
@@ -423,15 +480,11 @@ class InvocationService:
                             ErrorCode.TENANT_SUSPENDED, ErrorCode.TOOL_ARGUMENT_VALIDATION_FAILED,
                             ErrorCode.QUOTA_EXCEEDED, ErrorCode.RATE_LIMIT_EXCEEDED, ErrorCode.APPROVAL_STATE_CONFLICT):
                 return await abort(exc.code.value, exc.message)
-            message = exc.message
-            if exc.code == ErrorCode.DEPENDENCY_UNAVAILABLE:  # past the point of no return
-                message = ("The call was sent to the upstream, but its outcome could not be recorded because a "
-                           "database was unavailable. It is not retried. Check the upstream system before "
-                           "requesting it again.")
-            await self.repos.approvals.transition(tenant_id, approval_id, "EXECUTING", "FAILED", {
-                "completed_at": utcnow(), "execution": {"error_code": exc.code.value, "message": message}})
-            await self.repos.invocations.update(tenant_id, claimed["invocation_id"], {"status": "failed",
-                                                                                     "error_code": exc.code.value})
+            code, message = exc.code.value, (OUTCOME_UNKNOWN if exc.code == ErrorCode.DEPENDENCY_UNAVAILABLE else exc.message)
+            await persist(lambda: self.repos.approvals.transition(tenant_id, approval_id, "EXECUTING", "FAILED", {
+                "completed_at": utcnow(), "execution": {"error_code": code, "message": message}}))
+            await persist(lambda: self.repos.invocations.update(tenant_id, claimed["invocation_id"], {
+                "status": "failed", "error_code": code}))
             return "FAILED"
         finally:
             request_id_var.reset(token)
@@ -439,14 +492,15 @@ class InvocationService:
             json.dumps({"content": outcome.content, "structured_content": outcome.structured_content,
                         "is_error": outcome.is_error}).encode(),
             f"{tenant_id}:{approval_id}:result")
-        await self.repos.approvals.transition(tenant_id, approval_id, "EXECUTING", "COMPLETED", {
+        await persist(lambda: self.repos.approvals.transition(tenant_id, approval_id, "EXECUTING", "COMPLETED", {
             "completed_at": utcnow(), "result_encrypted": result_ct, "result_expires_at": utcnow() + RESULT_RETENTION,
-            "execution": {"invocation_id": outcome.invocation_id, "status": outcome.status}})
-        await self.repos.invocations.update(tenant_id, claimed["invocation_id"], {
-            "status": "approved_executed", "executed_invocation_id": outcome.invocation_id})
-        await self.audit.record(tenant_id, "approval.execution.completed", principal=actor, approval_id=approval_id,
-                                invocation_id=claimed.get("invocation_id"), status=outcome.status,
-                                metadata={"executed_invocation_id": outcome.invocation_id})
+            "execution": {"invocation_id": outcome.invocation_id, "status": outcome.status}}))
+        await persist(lambda: self.repos.invocations.update(tenant_id, claimed["invocation_id"], {
+            "status": "approved_executed", "executed_invocation_id": outcome.invocation_id}))
+        await persist(lambda: self.audit.record(
+            tenant_id, "approval.execution.completed", principal=actor, approval_id=approval_id,
+            invocation_id=claimed.get("invocation_id"), status=outcome.status,
+            metadata={"executed_invocation_id": outcome.invocation_id}))
         return "COMPLETED"
 
     def approval_result(self, doc: dict[str, Any]) -> dict[str, Any] | None:
