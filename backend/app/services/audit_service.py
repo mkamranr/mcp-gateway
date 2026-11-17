@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from pymongo.errors import DuplicateKeyError
+
 from app.core.errors import ErrorCode, GatewayError
 from app.core.identity import Principal
 from app.core.ids import new_id, utcnow
@@ -48,11 +50,15 @@ class AuditService:
         reason_code: str | None = None,
         metadata: dict[str, Any] | None = None,
         required: bool = False,
+        event_id: str | None = None,
     ) -> dict[str, Any] | None:
         """Persist one audit event.
 
         ``required=True`` means the caller's action must not proceed if the event cannot be
         written (fail closed): an ``AUDIT_UNAVAILABLE`` error is raised.
+
+        ``event_id`` makes the write idempotent, for callers that retry it: the database error is raised as is
+        (so the caller can retry), and an event already written under that ID counts as written.
         """
         if isinstance(principal, Principal):
             pref: dict[str, Any] | None = principal.audit_ref()
@@ -61,7 +67,7 @@ class AuditService:
             pref = principal
             delegated = None
         event = {
-            "event_id": new_id("evt"),
+            "event_id": event_id or new_id("evt"),
             "timestamp": utcnow(),
             "event_type": event_type,
             "severity": severity or ("high" if event_type in HIGH_SEVERITY_EVENTS else "info"),
@@ -82,7 +88,20 @@ class AuditService:
         }
         try:
             return await self.repos.audit.append(tenant_id, event)
+        except (DuplicateKeyError, GatewayError) as exc:
+            # The repository reports a duplicate key as CONFLICT. With a fixed event_id that means an earlier attempt
+            # was written and only its acknowledgement was lost.
+            if event_id and (isinstance(exc, DuplicateKeyError) or exc.code == ErrorCode.CONFLICT):
+                return None
+            if event_id:
+                raise
+            log.error("audit.write_failed", event_type=event_type, error=type(exc).__name__)
+            if required:
+                raise GatewayError(ErrorCode.AUDIT_UNAVAILABLE, "Audit persistence is unavailable.") from exc
+            return None
         except Exception as exc:  # noqa: BLE001
+            if event_id:
+                raise
             log.error("audit.write_failed", event_type=event_type, error=type(exc).__name__)
             if required:
                 raise GatewayError(ErrorCode.AUDIT_UNAVAILABLE, "Audit persistence is unavailable.") from exc

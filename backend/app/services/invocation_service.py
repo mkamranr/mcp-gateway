@@ -545,22 +545,32 @@ class InvocationService:
                       output_hash: str | None = None, policy_ids: list[str] | None = None,
                       args_hash: str | None = None, event: str | None = None,
                       extra_meta: dict[str, Any] | None = None) -> None:
+        """Record the outcome of a call that was sent to the upstream. The call can't be undone, so the record and
+        its audit event ride out a MongoDB election (idempotently: the audit event has a fixed ID) rather than
+        be lost. Usage counters are best effort."""
         duration = int((time.perf_counter() - started) * 1000)
-        await self.repos.invocations.update(principal.tenant_id, inv_id, {
+        done_at = utcnow()
+        await persist(lambda: self.repos.invocations.update(principal.tenant_id, inv_id, {
             "status": status, "output_hash": output_hash, "duration_ms": duration, "error_code": error_code,
-            "completed_at": utcnow()})
-        await self.audit.record(
+            "completed_at": done_at}))
+        event_id = new_id("evt")
+        await persist(lambda: self.audit.record(
             principal.tenant_id, event or ("tool.invocation.completed" if status in ("completed", "tool_error")
                                            else "tool.invocation.failed"),
             principal=principal, invocation_id=inv_id, approval_id=ctx.approval_id, resource=resource,
             decision="ALLOW", policy_ids=policy_ids or [], status="success" if status == "completed" else status,
             duration_ms=duration, input_hash=args_hash, output_hash=output_hash, reason_code=error_code,
-            metadata={"source": ctx.source, **(extra_meta or {})})
+            metadata={"source": ctx.source, **(extra_meta or {})}, event_id=event_id))
         if resource.get("tool_id"):
-            await self.repos.usage.increment(principal.tenant_id, utcnow().strftime("%Y-%m-%dT%H"),
-                                             principal.principal_id, resource["tool_id"], status,
-                                             units=int(await self._tool_cost(principal.tenant_id,
-                                                                              resource["tool_id"])))
+            try:
+                await self.repos.usage.increment(principal.tenant_id, done_at.strftime("%Y-%m-%dT%H"),
+                                                 principal.principal_id, resource["tool_id"], status,
+                                                 units=int(await self._tool_cost(principal.tenant_id,
+                                                                                  resource["tool_id"])))
+            except Exception as exc:  # noqa: BLE001 - metrics must not turn a finished call into a failure
+                if not _is_dependency_error(exc):
+                    raise
+                log.warning("usage.increment_failed", invocation_id=inv_id, error=type(exc).__name__)
 
     async def _tool_cost(self, tenant_id: str, tool_id: str) -> int:
         t = await self.repos.tools.get(tenant_id, tool_id)

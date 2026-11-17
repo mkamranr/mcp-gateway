@@ -117,10 +117,13 @@ lost: they stay `APPROVED` in MongoDB, and the worker re-queues approvals that h
 to the upstream. If MongoDB or Redis fails before it (including while the dispatch record and its audit event
 are written), nothing was sent: the approved call is handed back (`APPROVED`, audited as
 `approval.execution.deferred`) and retried, never aborted, and the retry is not blocked by the first attempt's
-dispatch record. If it fails after it, the call is never retried: it may have reached the upstream. The worker
-keeps retrying its own state writes for up to 30 seconds, long enough to ride out an election, so the result is
-normally still recorded; if it can't be, the request is marked `FAILED` with a message saying the outcome could
-not be recorded.
+dispatch record. If it fails after it, the call is never retried: it may have reached the upstream. The
+gateway keeps retrying the writes that record the outcome (the invocation record, its audit event, and the
+approval's final state) for up to 30 seconds, long enough to ride out an election, so the result is normally
+still recorded. The audit event keeps the same ID across retries, so a retry whose first attempt did land is not
+recorded twice. This applies to direct agent calls too: a call that ran is audited even if the primary steps down
+as it returns. Usage counters are best effort. If the outcome still can't be recorded, the request is marked
+`FAILED` with a message saying the outcome could not be recorded.
 
 The worker sweeps claims that have been in progress for over 5 minutes (a worker died, or was cut off for
 longer than 30 seconds). With no dispatch record, the call never reached the upstream and goes back to

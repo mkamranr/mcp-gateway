@@ -105,6 +105,53 @@ async def test_outage_after_dispatch_is_never_retried(scenario, app, container, 
     assert mock_mcp_server.CALLS["send_email"] == 1
 
 
+@pytest.mark.parametrize("target", ["record", "audit"])
+async def test_outcome_record_rides_out_an_election_after_the_upstream_call(scenario, app, container, monkeypatch,
+                                                                            target):
+    """The upstream call succeeded and the primary steps down before the outcome is written: the record and its
+    audit event are retried, so the approved call completes with exactly one completion event. A retried audit
+    write whose first attempt did land (lost acknowledgement) is not written twice."""
+    s, approval_id = await _approved(scenario, app)
+    failures = {"left": 2}
+    if target == "record":
+        real = container.repos.invocations.update
+
+        async def update(tenant_id, inv_id, fields, *a, **k):
+            if fields.get("completed_at") and failures["left"]:
+                failures["left"] -= 1
+                raise NotPrimaryError("election in progress")
+            return await real(tenant_id, inv_id, fields, *a, **k)
+
+        monkeypatch.setattr(container.repos.invocations, "update", update)
+    else:
+        real_append = container.repos.audit.append
+
+        async def append(tenant_id, event):
+            if event["event_type"] == "tool.invocation.completed" and failures["left"]:
+                failures["left"] -= 1
+                if failures["left"] == 0:
+                    await real_append(tenant_id, event)  # written, but the acknowledgement is lost
+                raise NotPrimaryError("election in progress")
+            return await real_append(tenant_id, event)
+
+        monkeypatch.setattr(container.repos.audit, "append", append)
+    assert await container.invocations.execute_approved(s.tenant_id, approval_id) == "COMPLETED"
+    assert failures["left"] == 0 and mock_mcp_server.CALLS["send_email"] == 1
+    assert await container.repos.audit.col.count_documents(
+        {"approval_id": approval_id, "event_type": "tool.invocation.completed"}) == 1
+
+
+async def test_usage_counter_outage_does_not_fail_a_finished_call(scenario, app, container, monkeypatch):
+    s, approval_id = await _approved(scenario, app)
+
+    async def down(*_a, **_k):
+        raise NotPrimaryError("election in progress")
+
+    monkeypatch.setattr(container.repos.usage, "increment", down)
+    assert await container.invocations.execute_approved(s.tenant_id, approval_id) == "COMPLETED"
+    assert mock_mcp_server.CALLS["send_email"] == 1
+
+
 @pytest.mark.parametrize("stage", ["dispatch_record", "dispatch_audit", "concurrency_slot"])
 async def test_outage_before_the_upstream_call_defers_even_after_the_dispatch_record(scenario, app, container,
                                                                                    monkeypatch, stage):

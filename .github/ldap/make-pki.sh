@@ -21,6 +21,7 @@ openssl x509 -req -in server.csr -CA ldap-ca.pem -CAkey ldap-ca.key -CAcreateser
   -out server.crt 2>/dev/null
 rm -f server.csr server.ext
 cp ldap-ca.pem ca.crt
-openssl dhparam -dsaparam -out dhparam.pem 2048 2>/dev/null
+# PKCS#3 DH parameters: slapd here is built with GnuTLS, which cannot read the X9.42 output of "-dsaparam".
+openssl dhparam -out dhparam.pem 2048 2>/dev/null
 chmod 644 ./*
 echo "LDAP CI PKI written to $out"
