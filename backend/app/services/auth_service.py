@@ -42,6 +42,8 @@ class AuthService:
         self.cert_verifier = ClientCertVerifier.from_file(settings.mtls_client_ca_file) \
             if settings.mtls_client_ca_file else None
         self.cert_proxies = parse_networks(settings.mtls_trusted_proxies)
+        # LDAP sign-in (app.services.ldap_service.LdapService), attached by the container.
+        self.directory: Any = None
 
     # ------------------------------------------------------------------ rate limiting
     @staticmethod
@@ -71,30 +73,39 @@ class AuthService:
         await self._throttle(throttle_key, self.settings.login_max_attempts_per_window,
                              self.settings.login_window_seconds)
         user = await self.repos.users.by_username(uname)
-        ok = verify_password(password, user.get("password_hash") if user else None)
-        if not ok or not user or user.get("status") != "active":
-            await self.audit.record(
-                SYSTEM_TENANT, "auth.login.failed",
-                principal={"type": "user", "id": user["_id"] if user else None, "name": uname[:64]},
-                status="failure", metadata={"source_ip": source_ip},
-            )
-            raise GatewayError(ErrorCode.INVALID_CREDENTIAL, "Invalid username or password.")
+        # Local accounts always sign in locally, so a directory entry can never take over a local account by
+        # sharing its username. Unknown usernames and directory accounts go to the directory when it's enabled.
+        if self.directory is not None and (user is None or user.get("auth_source") == "ldap")                 and await self.directory.enabled():
+            user = await self.directory.authenticate(uname, password, source_ip)
+            method = "ldap"
+        else:
+            ok = verify_password(password, user.get("password_hash") if user else None)
+            if not ok or not user or user.get("status") != "active":
+                await self.audit.record(
+                    SYSTEM_TENANT, "auth.login.failed",
+                    principal={"type": "user", "id": user["_id"] if user else None, "name": uname[:64]},
+                    status="failure", metadata={"source_ip": source_ip},
+                )
+                raise GatewayError(ErrorCode.INVALID_CREDENTIAL, "Invalid username or password.")
+            await self._check_local_login_allowed(user, source_ip)
+            method = "password"
+            if password_needs_rehash(user["password_hash"]):
+                await self.repos.users.update(user["_id"], {"password_hash": hash_password(password)})
         assert user is not None
-        await self._check_local_login_allowed(user, source_ip)
         try:
             await self.redis.decr(self._throttle_key(throttle_key))
         except Exception:  # noqa: BLE001, S110 - the slot simply expires with the window
             pass
-        if password_needs_rehash(user["password_hash"]):
-            await self.repos.users.update(user["_id"], {"password_hash": hash_password(password)})
-        return await self.create_session(user, source_ip, tenant_id, method="password")
+        return await self.create_session(user, source_ip, tenant_id, method=method)
 
     async def _check_local_login_allowed(self, user: dict[str, Any], source_ip: str) -> None:
-        """When SSO restricts local login, only the named break-glass accounts may use a password."""
-        cfg = await self.repos.settings.get_value("oidc") or {}
-        if not cfg.get("enabled") or cfg.get("local_login") != "break_glass_only":
+        """When SSO or directory sign-in restricts local login, only the named break-glass accounts may use a
+        local password (an account named by any of them)."""
+        restricting = [cfg for cfg in [await self.repos.settings.get_value(k) or {} for k in ("oidc", "ldap")]
+                       if cfg.get("enabled") and cfg.get("local_login") == "break_glass_only"]
+        if not restricting:
             return
-        if user["username"] in (cfg.get("break_glass_usernames") or []):
+        if any(user["username"] in (cfg.get("break_glass_usernames") or []) for cfg in restricting):
             await self.audit.record(
                 SYSTEM_TENANT, "auth.break_glass.used", severity="high",
                 principal={"type": "user", "id": user["_id"], "name": user["username"]},
@@ -106,7 +117,8 @@ class AuthService:
             principal={"type": "user", "id": user["_id"], "name": user["username"]},
             status="failure", metadata={"source_ip": source_ip, "reason": "local_login_disabled"},
         )
-        raise GatewayError(ErrorCode.ACCESS_DENIED, "Password sign-in is disabled. Use single sign-on.")
+        raise GatewayError(ErrorCode.ACCESS_DENIED,
+                           "Local password sign-in is disabled. Use single sign-on or your directory account.")
 
     async def create_session(self, user: dict[str, Any], source_ip: str, tenant_id: str | None = None,
                              *, method: str = "password") -> dict[str, Any]:
@@ -227,6 +239,8 @@ class AuthService:
         user = await self.repos.users.get(principal.principal_id)
         if user and user.get("auth_source") == "oidc":
             raise GatewayError(ErrorCode.CONFLICT, "This account signs in through single sign-on and has no password.")
+        if user and user.get("auth_source") == "ldap":
+            raise GatewayError(ErrorCode.CONFLICT, "This account's password is managed in the corporate directory.")
         if not user or not verify_password(current, user.get("password_hash")):
             raise GatewayError(ErrorCode.INVALID_CREDENTIAL, "Current password is incorrect.")
         await self.repos.users.update(user["_id"], {"password_hash": hash_password(new), "must_change_password": False})

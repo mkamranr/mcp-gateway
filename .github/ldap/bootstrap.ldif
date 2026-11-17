@@ -1,0 +1,50 @@
+# Directory content for the LDAP CI job (base dc=ci,dc=example is created by the image).
+dn: ou=people,dc=ci,dc=example
+objectClass: organizationalUnit
+ou: people
+
+dn: ou=groups,dc=ci,dc=example
+objectClass: organizationalUnit
+ou: groups
+
+dn: uid=alice,ou=people,dc=ci,dc=example
+objectClass: inetOrgPerson
+uid: alice
+cn: Alice Admin
+sn: Admin
+displayName: Alice Admin
+mail: alice@ci.example
+userPassword: Alice-Ldap-Pass-1
+
+dn: uid=bob,ou=people,dc=ci,dc=example
+objectClass: inetOrgPerson
+uid: bob
+cn: Bob Developer
+sn: Developer
+mail: bob@ci.example
+userPassword: Bob-Ldap-Pass-1
+
+dn: uid=carol,ou=people,dc=ci,dc=example
+objectClass: inetOrgPerson
+uid: carol
+cn: Carol Nogroups
+sn: Nogroups
+userPassword: Carol-Ldap-Pass-1
+
+dn: uid=dave,ou=people,dc=ci,dc=example
+objectClass: inetOrgPerson
+uid: dave
+cn: Dave Developer
+sn: Developer
+userPassword: Dave-Ldap-Pass-1
+
+dn: cn=mgw-admins,ou=groups,dc=ci,dc=example
+objectClass: groupOfUniqueNames
+cn: mgw-admins
+uniqueMember: uid=alice,ou=people,dc=ci,dc=example
+
+dn: cn=mgw-developers,ou=groups,dc=ci,dc=example
+objectClass: groupOfUniqueNames
+cn: mgw-developers
+uniqueMember: uid=bob,ou=people,dc=ci,dc=example
+uniqueMember: uid=dave,ou=people,dc=ci,dc=example

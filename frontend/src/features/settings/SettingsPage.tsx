@@ -7,6 +7,7 @@ import { cn, timeAgo } from '../../services/format'
 import type { HealthComponent } from '../../services/types'
 import { Badge, Callout, Field, JsonView, PageHeading, Panel, QueryState, Status, useToast } from '../../components/ui'
 import { SiemSettings } from './SiemSettings'
+import { LdapSettings } from './LdapSettings'
 import { SsoSettings } from './SsoSettings'
 
 interface SettingsResp {
@@ -21,16 +22,16 @@ interface SettingsResp {
   stored: Record<string, any>; tenant: Record<string, any>; health: HealthComponent[]; editable: boolean
 }
 
-type Section = 'general' | 'security' | 'sso' | 'siem' | 'limits' | 'network' | 'account' | 'health'
+type Section = 'general' | 'security' | 'sso' | 'ldap' | 'siem' | 'limits' | 'network' | 'account' | 'health'
 const SECTIONS: { value: Section; label: string }[] = [
-  { value: 'general', label: 'General & MCP endpoint' }, { value: 'security', label: 'Security' }, { value: 'sso', label: 'Single sign-on' }, { value: 'siem', label: 'SIEM forwarding' }, { value: 'limits', label: 'Payload & global limits' },
+  { value: 'general', label: 'General & MCP endpoint' }, { value: 'security', label: 'Security' }, { value: 'sso', label: 'Single sign-on' }, { value: 'ldap', label: 'LDAP / Active Directory' }, { value: 'siem', label: 'SIEM forwarding' }, { value: 'limits', label: 'Payload & global limits' },
   { value: 'network', label: 'Network allowlists' }, { value: 'account', label: 'My account' }, { value: 'health', label: 'System health' },
 ]
 
 export function SettingsPage() {
   const [section, setSection] = useState<Section>('general')
   const { me } = useAuth()
-  const sections = SECTIONS.filter(s => !['sso', 'siem'].includes(s.value) || me?.is_platform_admin)
+  const sections = SECTIONS.filter(s => !['sso', 'ldap', 'siem'].includes(s.value) || me?.is_platform_admin)
   const q = useQuery({ queryKey: ['settings'], queryFn: () => api.get<SettingsResp>('/settings') })
   return (
     <>
@@ -38,7 +39,7 @@ export function SettingsPage() {
       <div className="settings-layout">
         <div className="settings-tabs">{sections.map(s => <button key={s.value} className={cn(section === s.value && 'selected')} onClick={() => setSection(s.value)}>{s.label}</button>)}</div>
         <div className="settings-form" style={{ maxWidth: 820 }}>
-          {section === 'account' ? <Account /> : section === 'sso' ? <SsoSettings /> : section === 'siem' ? <SiemSettings /> : <QueryState q={q}>{d => <SettingsSection section={section} d={d} />}</QueryState>}
+          {section === 'account' ? <Account /> : section === 'sso' ? <SsoSettings /> : section === 'ldap' ? <LdapSettings /> : section === 'siem' ? <SiemSettings /> : <QueryState q={q}>{d => <SettingsSection section={section} d={d} />}</QueryState>}
         </div>
       </div>
     </>
@@ -123,10 +124,12 @@ function Account() {
     onError: e => toast.error(e),
   })
   const sso = me?.auth_source === 'oidc'
+  const directory = me?.auth_source === 'ldap'
   return <Panel title="My account">
     <dl className="kv"><dt>Name</dt><dd>{me?.display_name}</dd><dt>Roles</dt><dd>{me?.is_platform_admin ? 'Platform Admin' : me?.roles.join(', ')}</dd>
-      <dt>Sign-in</dt><dd>{sso ? <Badge color="blue">single sign-on</Badge> : <Badge>local password</Badge>}</dd></dl>
-    {sso ? <Callout>Your account is managed by your organisation's identity provider. Change your password and group memberships there; roles here follow your IdP groups at each sign-in.</Callout> : <>
+      <dt>Sign-in</dt><dd>{sso ? <Badge color="blue">single sign-on</Badge> : directory ? <Badge color="blue">directory account</Badge> : <Badge>local password</Badge>}</dd></dl>
+    {sso ? <Callout>Your account is managed by your organisation's identity provider. Change your password and group memberships there; roles here follow your IdP groups at each sign-in.</Callout>
+      : directory ? <Callout>Your account is managed in your organisation's directory. Change your password there; roles here follow your directory groups at each sign-in.</Callout> : <>
     <div className="section-title">Change password</div>
     <Field label="Current password"><input type="password" autoComplete="current-password" value={cur} onChange={e => setCur(e.target.value)} /></Field>
     <Field label="New password" hint="At least 12 characters." error={next && next.length < 12 ? 'Too short' : null}><input type="password" autoComplete="new-password" value={next} onChange={e => setNext(e.target.value)} /></Field>

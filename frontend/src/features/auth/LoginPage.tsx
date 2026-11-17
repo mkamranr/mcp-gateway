@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { KeyRound, Loader2, Lock, LogIn, Shield } from 'lucide-react'
 import { useAuth } from '../../app/auth'
 import { api, ApiError, errorMessage } from '../../services/api'
-import type { SsoPublicConfig } from '../../services/types'
+import type { LdapPublicConfig, SsoPublicConfig } from '../../services/types'
 import { Callout, Field } from '../../components/ui'
 
 // Codes come from the gateway's /auth/oidc/callback redirect (?sso_error=...). Details are in the audit log.
@@ -43,6 +43,7 @@ export function LoginPage() {
   const [showLocal, setShowLocal] = useState(false)
   useEffect(stripSsoError, [])
   const sso = useQuery({ queryKey: ['sso-public'], queryFn: () => api.get<SsoPublicConfig>('/auth/oidc/config'), retry: false, staleTime: 60_000 })
+  const ldap = useQuery({ queryKey: ['ldap-public'], queryFn: () => api.get<LdapPublicConfig>('/auth/ldap/config'), retry: false, staleTime: 60_000 })
 
   const submit = async (e: FormEvent) => {
     e.preventDefault()
@@ -52,6 +53,7 @@ export function LoginPage() {
     } catch (err) {
       if (err instanceof ApiError && err.status === 429) setError(`Too many attempts. Try again in ${err.retryAfter ?? 60} seconds.`)
       else if (err instanceof ApiError && err.status === 401) setError('Invalid username or password.')
+      else if (err instanceof ApiError && err.status === 503) setError('The directory is unavailable. Try again later.')
       else setError(errorMessage(err))
     } finally {
       setBusy(false)
@@ -60,8 +62,12 @@ export function LoginPage() {
   }
 
   const ssoOn = !!sso.data?.enabled
-  const breakGlassOnly = ssoOn && sso.data?.local_login === 'break_glass_only'
+  const ldapOn = !!ldap.data?.enabled
+  // Directory accounts use the password form, so it stays visible whenever directory sign-in is on.
+  const breakGlassOnly = ssoOn && !ldapOn && sso.data?.local_login === 'break_glass_only'
   const localVisible = !breakGlassOnly || showLocal
+  const directoryName = ldap.data?.display_name.toLowerCase() || 'directory account'
+  const formLabel = ldapOn ? `or with your ${directoryName}` : breakGlassOnly ? 'Break-glass administrator' : 'or with a local account'
   const returnTo = window.location.pathname + window.location.search.replace(/[?&]sso_error=[^&]*/, '')
   const ssoHref = `/api/v1/auth/oidc/login?return_to=${encodeURIComponent(returnTo)}`
 
@@ -76,7 +82,8 @@ export function LoginPage() {
         <p>Administrative console. Access is logged.</p>
         {error && <Callout kind="danger">{error}</Callout>}
         {ssoOn && <a className="btn primary sso-btn" href={ssoHref}><LogIn size={14} />Sign in with {sso.data!.display_name}</a>}
-        {ssoOn && localVisible && <div className="login-divider"><span>{breakGlassOnly ? 'Break-glass administrator' : 'or with a local account'}</span></div>}
+        {ssoOn && localVisible && <div className="login-divider"><span>{formLabel}</span></div>}
+        {!ssoOn && ldapOn && <p className="muted" style={{ marginTop: -6 }}>Use your {directoryName}.</p>}
         {localVisible && <>
           <Field label="Username"><input autoComplete="username" value={username} onChange={e => setUsername(e.target.value)} required autoFocus={!ssoOn} /></Field>
           <Field label="Password"><input type="password" autoComplete="current-password" value={password} onChange={e => setPassword(e.target.value)} required /></Field>

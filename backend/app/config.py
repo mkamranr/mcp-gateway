@@ -91,6 +91,10 @@ class Settings(BaseSettings):
     oidc_http_timeout_seconds: float = 10.0
     oidc_allow_insecure_http: bool = False  # http:// issuers; honoured only outside production
 
+    # LDAP / Active Directory sign-in (the directory itself is configured in the console).
+    ldap_allow_insecure: bool = False  # ldap:// without StartTLS; honoured only outside production
+    ldap_max_concurrent_binds: int = Field(default=20, ge=1, le=200)
+
     # Agent client certificates (docs/mtls.md). A TLS proxy verifies the certificate and forwards it in a header;
     # the header is accepted only from MTLS_TRUSTED_PROXIES. Off unless MTLS_CLIENT_CA_FILE is set.
     mtls_client_ca_file: str | None = None  # PEM bundle of the CAs that issue agent certificates

@@ -39,3 +39,5 @@ backups/
 
 # mTLS CI job: throwaway PKI (.github/mtls/make-pki.sh)
 .github/mtls/pki/
+# LDAP CI job: throwaway PKI (.github/ldap/make-pki.sh)
+.github/ldap/pki/

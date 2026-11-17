@@ -1,0 +1,42 @@
+# LDAP test topology (CI job "ldap"), layered on docker-compose.yml:
+#
+#   sh .github/ldap/make-pki.sh
+#   COMPOSE_FILE=docker-compose.yml:.github/ldap/docker-compose.ldap.yml docker compose up -d --wait
+#
+# openldap is a real OpenLDAP server with LDAPS (636) and StartTLS (389), a certificate from a throwaway CA that
+# names only "openldap", and a read-only service account. It sits on the gateway's egress network, like a
+# corporate directory would.
+
+services:
+  openldap:
+    image: osixia/openldap:1.5.0
+    command: ["--copy-service"]
+    hostname: openldap
+    environment:
+      LDAP_ORGANISATION: MCP-Gateway CI
+      LDAP_DOMAIN: ci.example
+      LDAP_ADMIN_PASSWORD: ci-admin-password
+      LDAP_READONLY_USER: "true"
+      LDAP_READONLY_USER_USERNAME: readonly
+      LDAP_READONLY_USER_PASSWORD: ci-readonly-password
+      LDAP_TLS: "true"
+      LDAP_TLS_CRT_FILENAME: server.crt
+      LDAP_TLS_KEY_FILENAME: server.key
+      LDAP_TLS_CA_CRT_FILENAME: ca.crt
+      LDAP_TLS_DH_PARAM_FILENAME: dhparam.pem
+      LDAP_TLS_VERIFY_CLIENT: never
+      LDAP_TLS_ENFORCE: "false"
+    volumes:
+      - ./.github/ldap/pki:/container/service/slapd/assets/certs:ro
+      - ./.github/ldap/bootstrap.ldif:/container/service/slapd/assets/config/bootstrap/ldif/custom/50-ci.ldif:ro
+    ulimits:
+      nofile: { soft: 1024, hard: 1024 }  # slapd allocates per descriptor; the runner default makes it hang
+    healthcheck:
+      test: ["CMD-SHELL", "ldapsearch -x -H ldap://localhost -D cn=readonly,dc=ci,dc=example -w ci-readonly-password -b ou=groups,dc=ci,dc=example cn=mgw-admins | grep -q '^dn:'"]
+      interval: 5s
+      timeout: 5s
+      retries: 40
+    networks:
+      frontend:
+        aliases: [ldap-alias]  # not in the certificate: host-name verification must refuse it
+

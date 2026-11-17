@@ -25,6 +25,7 @@ from app.models.sso import OidcConfigUpdate
 from app.repositories.collections import Repos
 from app.services.audit_service import AuditService
 from app.services.auth_service import SYSTEM_TENANT, AuthService
+from app.services.group_sync import desired_memberships, sync_memberships
 from app.services.oidc_client import OidcClient, OidcError, pkce_pair
 
 log = get_logger(__name__)
@@ -87,7 +88,7 @@ class SsoService:
         if data["local_login"] == "break_glass_only":
             ok = await self.repos.users.col.count_documents({
                 "username": {"$in": data["break_glass_usernames"]}, "is_platform_admin": True, "status": "active",
-                "password_hash": {"$type": "string"}, "auth_source": {"$ne": "oidc"}})
+                "password_hash": {"$type": "string"}, "auth_source": {"$nin": ["oidc", "ldap"]}})
             if not ok:
                 raise GatewayError(ErrorCode.VALIDATION_FAILED,
                                    "At least one break-glass account must be an active local platform administrator.")
@@ -215,10 +216,7 @@ class SsoService:
     async def _provision(self, cfg: dict[str, Any], claims: dict[str, Any], source_ip: str) -> dict[str, Any]:
         issuer, subject = claims["iss"], claims["sub"]
         groups = self._groups(claims, cfg.get("groups_claim") or "groups")
-        desired: dict[str, set[str]] = {}
-        for rule in cfg.get("group_rules") or []:
-            if rule["group"] in groups:
-                desired.setdefault(rule["tenant_id"], set()).update(rule["roles"])
+        desired = desired_memberships(cfg.get("group_rules") or [], groups)
         is_admin = bool(groups & set(cfg.get("platform_admin_groups") or []))
 
         user = await self.repos.users.col.find_one({"oidc.issuer": issuer, "oidc.subject": subject})
@@ -274,31 +272,5 @@ class SsoService:
         elif is_admin and not user.get("is_platform_admin"):
             updates["is_platform_admin"] = True
         await self.repos.users.update(user["_id"], updates)
-        await self._sync_memberships(user, desired)
+        await sync_memberships(self.repos, self.audit, user, desired, MANAGED_BY)
         return await self.repos.users.get(user["_id"]) or user
-
-    async def _sync_memberships(self, user: dict[str, Any], desired: dict[str, set[str]]) -> None:
-        existing = [m async for m in self.repos.memberships.col.find({"user_id": user["_id"]})]
-        by_tenant = {m["tenant_id"]: m for m in existing}
-        actor = {"type": "system", "id": "oidc-sync", "name": "SSO group sync"}
-        for tenant_id, roles in desired.items():
-            m = by_tenant.get(tenant_id)
-            role_list = sorted(roles)
-            if m is None:
-                await self.repos.memberships.insert(tenant_id, {"user_id": user["_id"], "roles": role_list,
-                                                                "status": "active", "managed_by": MANAGED_BY})
-                await self.audit.record(tenant_id, "user.membership.created", principal=actor,
-                                        resource={"user_id": user["_id"], "username": user["username"]},
-                                        metadata={"roles": role_list, "source": "oidc"})
-            elif m.get("managed_by") == MANAGED_BY and (m.get("roles") != role_list or m.get("status") != "active"):
-                await self.repos.memberships.update(tenant_id, m["_id"], {"roles": role_list, "status": "active"})
-                await self.audit.record(tenant_id, "user.membership.changed", principal=actor,
-                                        resource={"user_id": user["_id"], "username": user["username"]},
-                                        metadata={"roles": role_list, "status": "active", "source": "oidc"})
-        for tenant_id, m in by_tenant.items():
-            if tenant_id not in desired and m.get("managed_by") == MANAGED_BY and m.get("status") == "active":
-                await self.repos.memberships.update(tenant_id, m["_id"], {"status": "disabled"})
-                await self.audit.record(tenant_id, "user.membership.changed", principal=actor,
-                                        resource={"user_id": user["_id"], "username": user["username"]},
-                                        metadata={"status": "disabled", "source": "oidc",
-                                                  "reason": "IdP group no longer maps to this tenant"})

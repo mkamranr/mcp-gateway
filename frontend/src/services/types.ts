@@ -17,7 +17,7 @@ export interface Me {
   version: string
   csrf_token?: string | null
   must_change_password?: boolean
-  auth_source?: 'local' | 'oidc'
+  auth_source?: 'local' | 'oidc' | 'ldap'
 }
 
 export interface SsoPublicConfig { enabled: boolean; display_name: string; local_login: 'enabled' | 'break_glass_only' }
@@ -34,6 +34,20 @@ export interface SsoTestResult {
   ok: boolean; error?: string; detail?: string; authorization_endpoint?: string; token_endpoint?: string
   userinfo_endpoint?: string | null; end_session_endpoint?: string | null; signing_keys?: number
   signing_algorithms?: string[]; algorithm_overlap?: string[] | null
+}
+
+export interface LdapPublicConfig { enabled: boolean; display_name: string }
+export interface LdapConfig {
+  enabled: boolean; display_name: string; server_urls: string[]; start_tls: boolean; ca_pem: string; timeout_seconds: number
+  bind_dn: string; user_search_base: string; user_filter: string; username_attribute: string; unique_id_attribute: string
+  email_attribute: string; name_attribute: string; group_membership_attribute: string; group_search_base: string
+  group_search_filter: string; group_rules: SsoGroupRule[]; platform_admin_groups: string[]; jit_provisioning: boolean
+  local_login: 'enabled' | 'break_glass_only'; break_glass_usernames: string[]
+  has_bind_password: boolean; updated_at: string | null; updated_by: string | null
+}
+export interface LdapTestResult {
+  ok: boolean; error?: string; detail?: string; server?: string
+  user?: { dn: string; unique_id: string; username: string; email: string | null; display_name: string | null; groups: string[]; grants: Record<string, string[]>; platform_admin: boolean } | null
 }
 
 export interface CertInfo {
@@ -178,7 +192,7 @@ export interface AuditEvent {
 export interface TenantUser {
   membership_id: string; user_id: string; username: string; email: string | null; display_name: string
   roles: string[]; status: string; user_status: string; last_login_at: string | null; created_at: string
-  auth_source?: 'local' | 'oidc'; managed_by?: 'manual' | 'oidc'
+  auth_source?: 'local' | 'oidc' | 'ldap'; managed_by?: 'manual' | 'oidc' | 'ldap'
 }
 
 export interface Tenant { id: string; name: string; slug: string; status: string; settings: Record<string, any>; created_at: string }
