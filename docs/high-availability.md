@@ -83,7 +83,9 @@ MONGODB_URI=mongodb://mgw:<password>@mongo-1:27017,mongo-2:27017,mongo-3:27017/?
 `w=majority` makes acknowledged writes, including audit events, survive the loss of the primary.
 `retryWrites=true` retries a write once across a failover. Reads go to the primary, so a decision never uses
 stale policy. During an election (typically under 12 seconds) requests that need MongoDB fail closed with
-`503 DEPENDENCY_UNAVAILABLE`; nothing is executed without its audit record.
+`503 DEPENDENCY_UNAVAILABLE` and `Retry-After: 5`; nothing is executed without its audit record. If the policy
+store is the part that's unreachable, the decision is still audited as a DENY (`POLICY_ENGINE_UNAVAILABLE`), but
+the caller gets the retryable 503 rather than a misleading `ACCESS_DENIED`.
 
 **Redis: one master with replicas, managed by Sentinel.**
 
@@ -96,13 +98,35 @@ REDIS_URL=redis://:<password>@ignored:6379/0     # password, database and rediss
 
 The gateway asks the sentinels for the current master and reconnects to the promoted replica after a failover.
 Use `appendonly yes` with `appendfsync everysec` on every Redis node, and `min-replicas-to-write 1` so a
-partitioned old master stops accepting writes. During a failover (seconds), hard quotas, sessions and job
-queueing fail closed. Redis Cluster isn't supported: the quota scripts and the job stream need one keyspace.
+partitioned old master stops accepting writes. With that setting, run **at least two replicas**: after a failover
+the promoted master needs one replica left, or it refuses writes. During a failover (seconds), hard quotas,
+sessions and job queueing fail closed. Redis Cluster isn't supported: the quota scripts and the job stream need
+one keyspace.
+
+Point Sentinel at the master by **IP address or a DNS name that keeps resolving when the host is down**. Docker
+and Kubernetes service names stop resolving the moment the container dies; Sentinel's blocking re-resolution then
+puts it into TILT mode, in which it deliberately does nothing, so it never fails over. (`sentinel monitor mgw
+10.0.0.11 6379 2`, not `sentinel monitor mgw redis 6379 2` with `resolve-hostnames yes`.)
 
 What a Redis failover can lose, with asynchronous replication: the last second or so of writes. In practice
 that means a few quota increments (limits may admit slightly more calls than configured, once), console sessions
 created in that second (users sign in again), and approval jobs queued in that second. Those approvals are not
 lost: they stay `APPROVED` in MongoDB, and the worker re-queues approvals that have waited too long.
+
+**Approved calls across an outage.** Execution has one point of no return: the dispatch record written just
+before the upstream is called. If MongoDB or Redis fails before it, the approved call is handed back
+(`APPROVED`, audited as `approval.execution.deferred`) and retried, never aborted. If it fails after it, the
+call is never retried: it may have reached the upstream, so it is marked `FAILED` with a message saying the
+outcome could not be recorded. A claim left behind by a worker that died is returned after 5 minutes, but only
+if no dispatch record exists. Exactly once beats at least once here.
+
+**Verified in CI.** The `failover` job (`.github/failover/docker-compose.failover.yml`) runs this layout: a
+three-member replica set with keyfile auth and `w=majority`, a Redis master with two replicas and three
+Sentinels. Under steady load it kills the MongoDB primary, then the Redis master, with approvals in flight
+each time. It requires that every response is a success or a fail-closed 503 (no 500, no hang, no lost session),
+that the gateway recovers by itself within seconds without restarting a process, that every approved call
+completes and is dispatched exactly once, and that every successful call is in the audit log. Typical result:
+one to three 503s out of about 450 requests per failover.
 
 **Load balancer.** Health-check `GET /healthz` on each web-ui (or `GET /health/ready` through it, which also
 checks MongoDB and Redis). No session affinity is needed.

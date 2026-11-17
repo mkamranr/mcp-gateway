@@ -82,7 +82,8 @@ append-only audit log, before anything reaches the upstream server.
 - Append-only, correlated audit trail with search and audited export.
 - **SIEM forwarding** to syslog (TLS/TCP/UDP) or HTTP collectors such as Splunk HEC, as JSON or CEF.
 - Prometheus metrics, usage dashboards, upstream health checks.
-- **High availability.** Stateless API and workers; MongoDB replica sets and Redis Sentinel.
+- **High availability.** Stateless API and workers; MongoDB replica sets and Redis Sentinel, with failover
+  tested under load in CI.
 - Tested backup and restore scripts.
 
 </td>
@@ -229,6 +230,7 @@ Every push and pull request runs in GitHub Actions:
 | **Dependency scan** | `pip-audit` and `npm audit` on production dependencies |
 | **Compose smoke test** | starts the full stack with **all internet egress blocked**, checks health, ports, auth, CSRF and security headers, runs the policy-as-code CLI, and performs a **backup → wipe → restore** drill, including refusing a damaged archive and a wrong encryption key |
 | **Multi-replica** | two API replicas and two workers: concurrent first boot, a replica stopped under load with no failed requests, scale-out picked up without a proxy reload, worker failover |
+| **Failover** | MongoDB replica set and Redis Sentinel: the primary, then the master, is killed under load with approvals in flight. Only fail-closed 503s, automatic recovery, every approved call run exactly once, nothing missing from the audit log |
 
 A manual release workflow builds the air-gap bundle, deletes every image, then loads and starts the bundle with
 egress blocked, as an air-gapped host would.
