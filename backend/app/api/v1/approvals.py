@@ -74,7 +74,7 @@ async def get_approval(approval_id: str, p: Principal = Depends(get_principal),
     d = await c.approvals.detail(p, approval_id)
     await c.audit.record(p.tenant_id, "approval.viewed", principal=p, approval_id=approval_id)
     return {**approval_to_api(d["approval"], include_args=d["arguments"]), "integrity": d["integrity"],
-            "changes_since_request": d["changes_since_request"],
+            "preview_gaps": d["preview_gaps"], "changes_since_request": d["changes_since_request"],
             "related_invocations": [{**{k: v for k, v in i.items() if k != "_id"}, "id": i["_id"]}
                                     for i in d["related_invocations"]],
             "separation_of_duties_warning": d["separation_of_duties_warning"], "can_decide": d["can_decide"],

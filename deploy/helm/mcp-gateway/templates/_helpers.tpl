@@ -120,6 +120,10 @@ imagePullSecrets:
   value: /run/secrets/mgw/mongodb_uri
 - name: REDIS_URL_FILE
   value: /run/secrets/mgw/redis_url
+{{- with (.Values.api.trustedProxies | default .Values.mtls.trustedProxies) }}
+- name: TRUSTED_PROXIES
+  value: {{ . | quote }}
+{{- end }}
 {{- if .Values.mtls.enabled }}
 - name: MTLS_CLIENT_CA_FILE
   value: /run/secrets/mgw-mtls/agent-ca.pem

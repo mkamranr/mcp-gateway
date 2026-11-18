@@ -53,8 +53,10 @@ All settings are in [`.env.example`](../.env.example) with comments. Ones you'll
 | `PUBLIC_BASE_URL` | external URL. Used to show the MCP endpoint to administrators. |
 | `UPSTREAM_HOST_ALLOWLIST` | comma-separated hosts or `*.domain` that upstream servers may use |
 | `ALLOW_PRIVATE_UPSTREAM_NETWORKS` | must be `true` (plus the per-server flag) for internal upstreams |
-| `STDIO_EXECUTABLE_ALLOWLIST` | absolute paths of permitted stdio server binaries. Empty disables stdio. |
-| `COOKIE_SECURE` | keep `true` behind HTTPS |
+| `STDIO_EXECUTABLE_ALLOWLIST` | absolute paths of permitted stdio server binaries. Empty disables stdio. Only platform administrators can register stdio servers. |
+| `TRUSTED_PROXIES` | CIDRs whose `X-Forwarded-For` is believed. Compose sets it to the edge network (`MGW_EDGE_SUBNET`). |
+| `LOGIN_MAX_ATTEMPTS_PER_ACCOUNT_WINDOW`, `LOGIN_MAX_ATTEMPTS_PER_IP_WINDOW` | sign-in throttling per account (default 100) and per address (default 0, off: enable once real client addresses reach the gateway) |
+| `COOKIE_SECURE` | keep `true` behind HTTPS. The load balancer that terminates TLS should add `Strict-Transport-Security` to the console's pages; the gateway adds it only to API responses. |
 | `MAX_*`, `DEFAULT_TOOL_TIMEOUT_SECONDS` | payload and execution limits |
 | `AUDIT_RETENTION_DAYS`, `AUDIT_EXPORT_MAX_ROWS` | audit policy |
 

@@ -26,7 +26,8 @@ agent ──TLS + client cert──▶ nginx :8443 ──X-Client-Cert──▶ 
    your load balancer) completes the handshake only if the certificate was issued by the agent CA. The handshake
    is what proves the agent holds the private key.
 2. The proxy forwards the verified certificate to the gateway in a header (`X-Client-Cert`, URL-escaped PEM).
-3. The gateway accepts that header **only from `MTLS_TRUSTED_PROXIES`**. A certificate is public, so anyone else
+3. The gateway accepts that header **only when the TCP peer is in `MTLS_TRUSTED_PROXIES`**: the address the
+   connection really comes from, never a forwarded one. A certificate is public, so anyone else
    sending the header proves nothing; it is ignored and logged. The gateway then re-checks that the certificate
    was issued by a CA in `MTLS_CLIENT_CA_FILE`, is within its validity dates, and is meant for client
    authentication.

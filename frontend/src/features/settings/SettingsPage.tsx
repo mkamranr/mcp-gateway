@@ -21,9 +21,10 @@ interface SettingsResp {
   system: {
     version: string; environment: string; mcp_endpoint: string; public_base_url: string | null
     session: { ttl_minutes: number; idle_minutes: number; cookie_secure: boolean }
-    security: { default_deny: boolean; audit_required_for_execution: boolean; allow_private_upstream_networks: boolean; key_management?: KeyManagementInfo }
+    // allow_private_upstream_networks, key_management and network are returned to platform administrators only
+    security: { default_deny: boolean; audit_required_for_execution: boolean; allow_private_upstream_networks?: boolean; key_management?: KeyManagementInfo }
     payload_limits: Record<string, number>
-    network: { upstream_host_allowlist: string[]; stdio_executable_allowlist: string[]; cors_allowed_origins: string[] }
+    network?: { upstream_host_allowlist: string[]; stdio_executable_allowlist: string[]; cors_allowed_origins: string[] }
     audit: { retention_days: number; export_max_rows: number }
   }
   stored: Record<string, any>; tenant: Record<string, any>; health: HealthComponent[]; editable: boolean
@@ -38,7 +39,7 @@ const SECTIONS: { value: Section; label: string }[] = [
 export function SettingsPage() {
   const [section, setSection] = useState<Section>('general')
   const { me } = useAuth()
-  const sections = SECTIONS.filter(s => !['sso', 'ldap', 'scim', 'agent-oauth', 'siem'].includes(s.value) || me?.is_platform_admin)
+  const sections = SECTIONS.filter(s => !['sso', 'ldap', 'scim', 'agent-oauth', 'siem', 'network'].includes(s.value) || me?.is_platform_admin)
   const q = useQuery({ queryKey: ['settings'], queryFn: () => api.get<SettingsResp>('/settings') })
   return (
     <>
@@ -73,15 +74,15 @@ function SettingsSection({ section, d }: { section: Section; d: SettingsResp }) 
   if (section === 'security') return <Panel title="Security posture">
     <div className="toggle-row"><span>Default deny</span><Badge color="green">always on</Badge></div>
     <div className="toggle-row"><span>Block sensitive execution when audit storage is unavailable</span>{s.security.audit_required_for_execution ? <Badge color="green">on</Badge> : <Badge color="red">off</Badge>}</div>
-    <div className="toggle-row"><span>Allow private upstream networks (platform default)</span>{s.security.allow_private_upstream_networks ? <Badge color="orange">allowed</Badge> : <Badge color="green">blocked</Badge>}</div>
+    {s.security.allow_private_upstream_networks !== undefined && <div className="toggle-row"><span>Allow private upstream networks (platform default)</span>{s.security.allow_private_upstream_networks ? <Badge color="orange">allowed</Badge> : <Badge color="green">blocked</Badge>}</div>}
     <div className="toggle-row"><span>Critical tools require approval (this tenant)</span>{d.tenant.critical_requires_approval !== false ? <Badge color="green">on</Badge> : <Badge color="red">off</Badge>}</div>
-    <KeyManagement km={s.security.key_management} />
+    {d.editable && <KeyManagement km={s.security.key_management} />}
     <Callout>Secrets, encryption keys and peppers are configured only through environment variables or mounted secret files. They are never shown here.</Callout>
   </Panel>
 
   if (section === 'limits') return <LimitsEditor d={d} />
 
-  if (section === 'network') return <Panel title="Network allowlists" subtitle="Configured by environment variables">
+  if (section === 'network' && s.network) return <Panel title="Network allowlists" subtitle="Configured by environment variables">
     <div className="section-title">Upstream host allowlist</div>
     {s.network.upstream_host_allowlist.length ? <div className="chips">{s.network.upstream_host_allowlist.map(h => <span className="chip mono" key={h}>{h}</span>)}</div> : <p className="muted" style={{ fontSize: 10 }}>Not set. Any public host is allowed and private ranges are blocked.</p>}
     <div className="section-title">stdio executable allowlist</div>

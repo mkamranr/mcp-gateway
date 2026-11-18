@@ -30,7 +30,7 @@ jobs:
           node-version: "22.23.5"
       - name: SBOMs
         run: |
-          (cd frontend && npm ci)
+          (cd frontend && npm ci --ignore-scripts)  # no install scripts in the release workspace
           sh deploy/scripts/sbom.sh
       - name: Build the bundle
         run: |

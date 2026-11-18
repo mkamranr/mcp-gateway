@@ -48,6 +48,10 @@ api:
     limits: { cpu: "2", memory: 1Gi }
   podDisruptionBudget: { enabled: true, minAvailable: 1 }
   autoscaling: { enabled: false, minReplicas: 2, maxReplicas: 6, targetCPUUtilizationPercentage: 70 }
+  # Address range of the web UI pods (usually the cluster pod CIDR, e.g. 10.244.0.0/16). Only their
+  # X-Forwarded-For is believed; without it every client appears as a web UI pod (login throttling, audit,
+  # source_cidrs policies). Defaults to mtls.trustedProxies.
+  trustedProxies: ""
   extraEnv: []          # [{name: OIDC_CA_BUNDLE_FILE, value: /etc/mgw/idp-ca/ca.pem}]
   extraVolumes: []
   extraVolumeMounts: []

@@ -15,6 +15,13 @@ const STATUS_COLOR: Record<string, 'green' | 'red' | 'orange' | 'purple' | 'blue
   REJECTED: 'red', EXPIRED: 'orange', CANCELLED: 'red', CANCELLED_BY_ADMIN: 'red', FAILED: 'red', EXECUTION_ABORTED: 'red',
 }
 
+const GAP_TEXT: Record<string, string> = {
+  items_omitted: 'lists are cut after 100 items',
+  text_truncated: 'long text is cut after 2,000 characters',
+  nesting_truncated: 'deeply nested values are hidden',
+  fields_masked: 'sensitive fields are masked',
+}
+
 export function ApprovalsPage() {
   const { id } = useParams()
   const nav = useNavigate()
@@ -113,6 +120,7 @@ function ApprovalDetail({ id, onClose }: { id: string; onClose: () => void }) {
         {a.status === 'PENDING' && a.escalated_at && <Callout kind="warn">Escalated {timeAgo(a.escalated_at)} because nobody decided in time. It is now open to: {(policyCfg.escalation_roles || []).join(', ') || 'no additional roles'}.</Callout>}
         {a.changes_since_request && a.changes_since_request.length > 0 && <Callout kind="warn">Changed since the request: {a.changes_since_request.map(c => c.replace(/_/g, ' ')).join(', ')}. The call is revalidated against current state before it runs.</Callout>}
         {a.integrity && a.integrity !== 'verified' && <Callout kind="danger">Argument integrity check failed ({a.integrity}). Don't approve. Execution would be aborted.</Callout>}
+        {(a.preview_gaps?.length ?? 0) > 0 && <Callout kind="warn">The arguments below are not shown in full: {a.preview_gaps!.map(g => GAP_TEXT[g]).join(', ')}. The verified hash covers the full payload, which is what runs, including the parts you can't see.</Callout>}
         {a.risk_level === 'critical' && a.status === 'PENDING' && <Callout kind="danger">Critical action. It may be destructive or irreversible.</Callout>}
 
         <dl className="kv">
@@ -124,7 +132,7 @@ function ApprovalDetail({ id, onClose }: { id: string; onClose: () => void }) {
           <dt>Approvals</dt><dd>{a.approvals.length} of {a.required_approvals} required</dd>
           {(policyCfg.approver_groups?.length ?? 0) > 0 && <><dt>Approver groups</dt><dd>{policyCfg.approver_groups!.join(', ')}</dd></>}
           {a.status === 'PENDING' && a.escalate_at && !a.escalated_at && <><dt>Escalates</dt><dd>{dateTime(a.escalate_at)} <span className="muted">to {(policyCfg.escalation_roles || []).join(', ') || 'audit only'}</span></dd></>}
-          <dt>Argument hash</dt><dd className="mono">{shortHash(a.arguments_hash)} {a.integrity === 'verified' && <Badge color="green">verified</Badge>}</dd>
+          <dt>Argument hash</dt><dd className="mono">{shortHash(a.arguments_hash)} {a.integrity === 'verified' && <Badge color="green">verified</Badge>}{(a.preview_gaps?.length ?? 0) > 0 && <> <Badge color="orange">preview incomplete</Badge></>}</dd>
           {(policyCfg.reasons?.length ?? 0) > 0 && <><dt>Why approval</dt><dd>{policyCfg.reasons!.join(', ')}</dd></>}
         </dl>
 

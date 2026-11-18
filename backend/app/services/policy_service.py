@@ -20,6 +20,9 @@ from app.models.policy import PolicyCreate, PolicyUpdate, Principals, Resources,
 from app.repositories.collections import Repos
 from app.services.audit_service import AuditService
 
+# Approver role/group that nobody holds: policies whose approver lists don't overlap leave no one able to approve.
+NO_APPROVER = "(no approver satisfies every policy)"
+
 log = get_logger(__name__)
 Decision = Literal["ALLOW", "DENY", "REQUIRE_APPROVAL"]
 
@@ -168,14 +171,18 @@ def _evaluate(policies: list[dict[str, Any]], ctx: RequestContext) -> PolicyDeci
         roles = base.get("approver_roles") or [Role.APPROVER.value, Role.SECURITY_ADMIN.value, Role.TENANT_ADMIN.value]
         for a in requiring:
             if a["constraints"].get("approver_roles"):
-                roles = [r for r in roles if r in a["constraints"]["approver_roles"]] or a["constraints"]["approver_roles"]
+                # Policies only narrow the approvers. No role satisfying every policy: nobody (but a global
+                # platform admin) may approve, never a fallback to one policy's list, which would widen another's.
+                roles = [r for r in roles if r in a["constraints"]["approver_roles"]] or [NO_APPROVER]
         # Approver groups narrow like roles. Escalation takes the earliest deadline and every escalation role;
         # reminders take the earliest point (the largest lead time).
         groups = list(base.get("approver_groups") or [])
         for a in requiring:
             if a["constraints"].get("approver_groups"):
                 g = a["constraints"]["approver_groups"]
-                groups = [x for x in groups if x in g] or list(g)
+                groups = [x for x in groups if x in g] if groups else list(g)
+                if not groups:
+                    groups = [NO_APPROVER]
         sources = [base] + [a["constraints"] for a in requiring]
         escalate = [int(x["escalate_after_minutes"]) for x in sources if x.get("escalate_after_minutes")]
         esc_roles = sorted({r for x in sources for r in (x.get("escalation_roles") or [])})

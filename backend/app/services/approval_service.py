@@ -24,6 +24,7 @@ from app.core.logging import get_logger
 from app.models.approval import TERMINAL, DelegationCreate
 from app.repositories.collections import Repos
 from app.services.audit_service import AuditService
+from app.services.registry_service import server_config_fingerprint
 
 log = get_logger(__name__)
 JOB_STREAM = "jobs:approved"
@@ -35,18 +36,52 @@ WORKER = {"type": "service", "id": "worker"}
 APPROVER_ROLES = {r.value for r in APPROVERS}
 
 
+PREVIEW_DEPTH, PREVIEW_ITEMS, PREVIEW_CHARS = 16, 100, 2000
+
+
 def mask_arguments(args: Any, redact_fields: list[str], depth: int = 0) -> Any:
-    """Masked view for approvers: configured sensitive fields hidden, long strings truncated."""
+    """Masked view for approvers: configured sensitive fields hidden, long strings and lists shortened, every
+    omission marked. ``preview_gaps`` says whether anything was left out."""
     fields = {f.lower() for f in redact_fields}
-    if depth > 16:
-        return "…"
+    if depth > PREVIEW_DEPTH:
+        return "… (nested too deeply to show)"
     if isinstance(args, dict):
         return {k: (MASK if k.lower() in fields else mask_arguments(v, redact_fields, depth + 1)) for k, v in args.items()}
     if isinstance(args, list):
-        return [mask_arguments(v, redact_fields, depth + 1) for v in args[:100]]
-    if isinstance(args, str) and len(args) > 2000:
-        return args[:2000] + f"… ({len(args)} chars)"
+        shown = [mask_arguments(v, redact_fields, depth + 1) for v in args[:PREVIEW_ITEMS]]
+        if len(args) > PREVIEW_ITEMS:
+            shown.append(f"… ({len(args) - PREVIEW_ITEMS} more items not shown)")
+        return shown
+    if isinstance(args, str) and len(args) > PREVIEW_CHARS:
+        return args[:PREVIEW_CHARS] + f"… ({len(args)} chars)"
     return args
+
+
+def preview_gaps(args: Any, redact_fields: list[str]) -> list[str]:
+    """What ``mask_arguments`` leaves out of the approver's view: ``items_omitted``, ``text_truncated``,
+    ``nesting_truncated``, ``fields_masked``. Empty when the preview shows the arguments in full."""
+    fields = {f.lower() for f in redact_fields}
+    gaps: set[str] = set()
+
+    def walk(v: Any, depth: int) -> None:
+        if depth > PREVIEW_DEPTH:
+            gaps.add("nesting_truncated")
+        elif isinstance(v, dict):
+            for k, item in v.items():
+                if k.lower() in fields:
+                    gaps.add("fields_masked")
+                else:
+                    walk(item, depth + 1)
+        elif isinstance(v, list):
+            if len(v) > PREVIEW_ITEMS:
+                gaps.add("items_omitted")
+            for item in v[:PREVIEW_ITEMS]:
+                walk(item, depth + 1)
+        elif isinstance(v, str) and len(v) > PREVIEW_CHARS:
+            gaps.add("text_truncated")
+
+    walk(args, 0)
+    return sorted(gaps)
 
 
 class ApprovalService:
@@ -80,12 +115,17 @@ class ApprovalService:
         rem = approval_obligation.get("remind_before_expiry_minutes")
         remind_at = expires_at - timedelta(minutes=int(rem)) if rem and int(rem) < ttl else None
         policies = await self.repos.policies.enabled_for_tenant(principal.tenant_id)
+        cred = (await self.repos.credentials.get(principal.tenant_id, principal.credential_id)
+                if principal.credential_id else None)
         doc = await self.repos.approvals.insert(principal.tenant_id, {
             "invocation_id": invocation_id,
             "requester": principal.audit_ref(),
             "agent_id": principal.agent_id,
             "credential_id": principal.credential_id,
+            # Whoever issued the calling credential is a requester too, for separation of duties.
+            "credential_issued_by": (cred or {}).get("created_by"),
             "delegated_by_user_id": principal.delegated_by_user_id,
+            "server_config_hash": server_config_fingerprint(server),
             "tool_id": tool["_id"], "tool_name": tool["upstream_name"], "gateway_name": tool["gateway_name"],
             "server_id": server["_id"], "server_name": server["name"], "risk_level": tool.get("risk_level"),
             "purpose": (purpose or "")[:1000] or None,
@@ -149,10 +189,11 @@ class ApprovalService:
         tool = await self.repos.tools.get(p.tenant_id, doc["tool_id"])
         redact = (tool or {}).get("output", {}).get("redact_fields", [])
         try:
-            args = mask_arguments(self.decrypt_arguments(doc), redact)
+            plain = self.decrypt_arguments(doc)
+            args, gaps = mask_arguments(plain, redact), preview_gaps(plain, redact)
             integrity = "verified"
         except GatewayError:
-            args, integrity = None, "failed"
+            args, gaps, integrity = None, [], "failed"
         changes = await self._changes_since_request(doc, tool)
         related = await self.repos.invocations.list(
             p.tenant_id, {"principal.id": doc["requester"]["id"], "tool_id": doc["tool_id"],
@@ -163,7 +204,8 @@ class ApprovalService:
         decide_as = ({"on_behalf_of": capacity["id"], "on_behalf_of_name": capacity["name"],
                       "delegation_id": capacity["delegation_id"]}
                      if capacity and capacity["delegation_id"] else None)
-        return {"approval": doc, "arguments": args, "integrity": integrity, "changes_since_request": changes,
+        return {"approval": doc, "arguments": args, "integrity": integrity, "preview_gaps": gaps,
+                "changes_since_request": changes,
                 "related_invocations": related["items"], "separation_of_duties_warning": sod,
                 "can_decide": capacity is not None, "cannot_decide_reason": why, "decide_as": decide_as,
                 "agent_owner_user_id": (agent or {}).get("owner_user_id")}
@@ -231,9 +273,11 @@ class ApprovalService:
 
     @staticmethod
     def _requester_ids(doc: dict[str, Any], agent: dict[str, Any] | None) -> set[str]:
-        ids = {doc.get("requester", {}).get("id"), doc.get("delegated_by_user_id")}
+        # The caller, the user who delegated to it, the user who issued its credential, and the agent's owner and
+        # creator: none of them may approve the agent's own request (unless the policy allows self-approval).
+        ids = {doc.get("requester", {}).get("id"), doc.get("delegated_by_user_id"), doc.get("credential_issued_by")}
         if agent:
-            ids.add(agent.get("owner_user_id"))
+            ids.update((agent.get("owner_user_id"), agent.get("created_by")))
         return {i for i in ids if i}
 
     def _authority_issue(self, actor_id: str, ident: dict[str, Any], doc: dict[str, Any],
@@ -452,6 +496,9 @@ class ApprovalService:
         delegator_id = data.delegator_user_id or p.principal_id
         if delegator_id != p.principal_id and not p.has_any_role(*SECURITY):
             raise denied("Only administrators can delegate another user's approval authority.")
+        if delegator_id != p.principal_id and data.delegate_user_id == p.principal_id:
+            # Otherwise an administrator could collect any approver's authority (and roles or groups they lack).
+            raise denied("You can't delegate another user's approval authority to yourself.")
         delegator = await self._identity(p.tenant_id, delegator_id)
         if not delegator or not (delegator["roles"] & APPROVER_ROLES):
             raise GatewayError(ErrorCode.VALIDATION_FAILED, "Only users who can approve requests can delegate.",

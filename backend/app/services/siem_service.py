@@ -22,7 +22,7 @@ import ssl
 from datetime import datetime, timedelta
 from typing import Any
 
-import httpx
+import httpx2
 from redis.asyncio import Redis
 
 from app.config import Settings
@@ -32,7 +32,7 @@ from app.core.identity import Principal
 from app.core.ids import new_id, utcnow
 from app.core.lease import Lease
 from app.core.logging import get_logger
-from app.mcp.net_guard import METADATA_HOSTS
+from app.mcp.net_guard import METADATA_HOSTS, NetPolicy, check_ip, guarded_client, resolve, validate_url
 from app.models.siem import SiemConfigUpdate
 from app.repositories.collections import Repos
 from app.services.audit_service import AuditService
@@ -53,6 +53,12 @@ MAX_BATCHES_PER_PASS = 10
 MAX_BACKOFF_SECONDS = 300
 SEND_TIMEOUT_SECONDS = 15
 MAX_RESPONSE_BYTES = 64_000
+# Collectors are usually on internal networks, so private ranges are allowed; link-local and cloud-metadata
+# addresses never are. Checked when the destination is saved and again at every connection (after DNS).
+NET_POLICY = NetPolicy(allow_private=True)
+# Fields that decide where the stored credential is sent, or how it is protected on the way. Changing any of
+# them without entering the credential again would send it to a destination it was never meant for.
+DESTINATION_FIELDS = ("transport", "host", "port", "url", "http_auth_header", "tls_ca_pem", "tls_verify_hostname")
 
 
 class SiemError(Exception):
@@ -73,21 +79,37 @@ class SiemService:
     async def _stored(self) -> dict[str, Any]:
         return dict(await self.repos.settings.get_value(CONFIG_KEY) or {})
 
+    @staticmethod
+    def _normalized(cfg: dict[str, Any]) -> dict[str, Any]:
+        """Stored settings merged over the defaults (older documents lack newer fields)."""
+        fields = {k: v for k, v in cfg.items() if k in SiemConfigUpdate.model_fields}
+        return SiemConfigUpdate.model_construct(**{**SiemConfigUpdate().model_dump(), **fields}).model_dump(
+            exclude={"http_auth_value"})
+
     async def admin_view(self) -> dict[str, Any]:
         cfg = await self._stored()
         secret = cfg.pop("http_auth_value_enc", None)
-        fields = {k: v for k, v in cfg.items() if k in SiemConfigUpdate.model_fields}
-        out = SiemConfigUpdate.model_validate(fields).model_dump(exclude={"http_auth_value"})
+        out = self._normalized(cfg)
         out.update({"has_http_auth_value": bool(secret), "updated_at": cfg.get("updated_at"),
                     "updated_by": cfg.get("updated_by")})
         return out
 
     def _check_destination(self, data: dict[str, Any]) -> None:
-        from urllib.parse import urlsplit
-
-        host = (urlsplit(data["url"]).hostname or "") if data["transport"] == "http" else data["host"]
-        if host and host.lower().strip("[]") in METADATA_HOSTS:
-            raise GatewayError(ErrorCode.VALIDATION_FAILED, "That destination address is not permitted.")
+        blocked = GatewayError(ErrorCode.VALIDATION_FAILED, "That destination address is not permitted.")
+        try:
+            if data["transport"] == "http":
+                if data["url"]:
+                    validate_url(data["url"], NET_POLICY)
+            elif data["host"]:
+                host = data["host"].lower().strip("[]").rstrip(".")
+                if host in METADATA_HOSTS:
+                    raise blocked
+                try:
+                    check_ip(host, NET_POLICY)
+                except ValueError:
+                    pass  # a host name: checked after DNS resolution at every connection
+        except GatewayError as exc:
+            raise blocked from exc
         if data["tls_ca_pem"]:
             try:
                 ssl.create_default_context(cadata=data["tls_ca_pem"])
@@ -102,7 +124,20 @@ class SiemService:
             data["http_auth_value_enc"] = (self.encryptor.encrypt(body.http_auth_value.encode(), SECRET_AAD)
                                            if body.http_auth_value else None)
         else:
+            if cfg.get("http_auth_value_enc"):
+                before = self._normalized(cfg)
+                moved = [k for k in DESTINATION_FIELDS if data.get(k) != before.get(k)]
+                if moved:
+                    raise GatewayError(
+                        ErrorCode.VALIDATION_FAILED,
+                        "Enter the collector credential again (or clear it) when changing the destination or its "
+                        "TLS settings: a stored credential is only sent where it was saved for.",
+                        details=[{"field": k} for k in moved])
             data["http_auth_value_enc"] = cfg.get("http_auth_value_enc")
+        if (data["http_auth_value_enc"] and data["transport"] == "http" and data["url"].startswith("http://")
+                and self.settings.app_env == "production"):
+            raise GatewayError(ErrorCode.VALIDATION_FAILED,
+                               "Use an https:// collector URL: the credential must not cross the network in clear text.")
         changed = sorted(k for k in (set(data) | set(cfg)) - {"updated_at", "updated_by"} if data.get(k) != cfg.get(k))
         data.update({"updated_at": utcnow().isoformat(), "updated_by": p.principal_id})
         await self.repos.settings.set_value(CONFIG_KEY, data, p.principal_id)
@@ -146,19 +181,53 @@ class SiemService:
             ctx.check_hostname = False  # the chain is still verified against the CA
         return ctx
 
+    @staticmethod
+    async def _address(host: str, port: int) -> str:
+        """The address to connect to: resolved now, every answer checked, and the checked address is the one
+        used (no DNS rebinding between check and connect)."""
+        name = host.strip("[]").rstrip(".")
+        if name.lower() in METADATA_HOSTS:
+            raise SiemError(f"connect {host}:{port}: destination not permitted")
+        try:
+            addresses = await resolve(name, port)
+        except OSError as exc:
+            raise SiemError(f"connect {host}:{port}: DNS resolution failed") from exc
+        if not addresses:
+            raise SiemError(f"connect {host}:{port}: DNS resolution failed")
+        try:
+            for ip in addresses:
+                check_ip(ip, NET_POLICY)
+        except GatewayError as exc:
+            raise SiemError(f"connect {host}:{port}: destination not permitted") from exc
+        return addresses[0]
+
+    @staticmethod
+    def _failure(where: str, exc: BaseException) -> SiemError:
+        """A failure description without the exception text (the test endpoint must not be a port scanner);
+        the detail goes to the worker log only."""
+        log.info("siem.send.error_detail", where=where, error=f"{type(exc).__name__}: {exc}"[:300])
+        if isinstance(exc, ssl.SSLError) or "SSL" in str(exc) or "CERTIFICATE" in str(exc).upper():
+            return SiemError(f"{where}: TLS handshake failed (SSL certificate or protocol error)")
+        if isinstance(exc, TimeoutError | httpx2.TimeoutException):
+            return SiemError(f"{where}: timed out")
+        return SiemError(f"{where}: could not connect or send")
+
     async def _send_stream(self, cfg: dict[str, Any], frames: list[bytes]) -> None:
         tls = self._ssl_context(cfg) if cfg["transport"] == "syslog_tls" else None
+        where = f"connect {cfg['host']}:{cfg['port']}"
+        address = await self._address(cfg["host"], cfg["port"])
         try:
             reader, writer = await asyncio.wait_for(
-                asyncio.open_connection(cfg["host"], cfg["port"], ssl=tls,
-                                        server_hostname=cfg["host"] if tls else None), SEND_TIMEOUT_SECONDS)
+                asyncio.open_connection(address, cfg["port"], ssl=tls,
+                                        server_hostname=cfg["host"].strip("[]") if tls else None),
+                SEND_TIMEOUT_SECONDS)
         except (OSError, TimeoutError, ssl.SSLError) as exc:
-            raise SiemError(f"connect {cfg['host']}:{cfg['port']}: {type(exc).__name__}: {exc}"[:300]) from exc
+            raise self._failure(where, exc) from exc
         try:
             writer.write(b"".join(frames))
             await asyncio.wait_for(writer.drain(), SEND_TIMEOUT_SECONDS)
         except (OSError, TimeoutError, ssl.SSLError) as exc:
-            raise SiemError(f"send: {type(exc).__name__}: {exc}"[:300]) from exc
+            raise self._failure("send", exc) from exc
         finally:
             writer.close()
             try:
@@ -168,11 +237,12 @@ class SiemService:
 
     async def _send_udp(self, cfg: dict[str, Any], messages: list[bytes]) -> None:
         loop = asyncio.get_running_loop()
+        address = await self._address(cfg["host"], cfg["port"])
         try:
             transport, _ = await loop.create_datagram_endpoint(asyncio.DatagramProtocol,
-                                                               remote_addr=(cfg["host"], cfg["port"]))
+                                                               remote_addr=(address, cfg["port"]))
         except OSError as exc:
-            raise SiemError(f"udp {cfg['host']}:{cfg['port']}: {exc}"[:300]) from exc
+            raise self._failure(f"udp {cfg['host']}:{cfg['port']}", exc) from exc
         try:
             for m in messages:
                 transport.sendto(m[:8192])
@@ -198,26 +268,40 @@ class SiemService:
                 cfg["http_auth_value_enc"], SECRET_AAD).decode()
         verify: Any = self._ssl_context(cfg) if cfg["url"].startswith("https://") else True
         try:
-            async with httpx.AsyncClient(timeout=SEND_TIMEOUT_SECONDS, verify=verify, follow_redirects=False) as c:
+            validate_url(cfg["url"], NET_POLICY)
+        except GatewayError as exc:
+            raise SiemError("http: destination not permitted") from exc
+        try:
+            # The guarded client resolves, checks every address against NET_POLICY and connects to the checked
+            # one; no redirects, no proxy variables, no connection reuse.
+            async with guarded_client(NET_POLICY, timeout=SEND_TIMEOUT_SECONDS, verify=verify) as c:
                 r = await c.post(cfg["url"], content=body.encode("utf-8"), headers=headers)
-        except httpx.HTTPError as exc:
-            raise SiemError(f"http: {type(exc).__name__}: {exc}"[:300]) from exc
+        except httpx2.HTTPError as exc:
+            if "blocked by gateway network policy" in str(exc):
+                raise SiemError("http: destination not permitted") from exc
+            raise self._failure("http", exc) from exc
         if not 200 <= r.status_code < 300:
             raise SiemError(f"http: collector returned HTTP {r.status_code}")
 
     async def send(self, cfg: dict[str, Any], events: list[dict[str, Any]]) -> None:
         if not events:
             return
-        t = cfg["transport"]
-        if t == "http":
-            await self._send_http(cfg, events)
-            return
-        msgs = [syslog_message(e, cfg["format"], facility=cfg.get("syslog_facility", 13), hostname=self.hostname)
-                for e in events]
-        if t == "syslog_udp":
-            await self._send_udp(cfg, msgs)
-        else:
-            await self._send_stream(cfg, [frame_tcp(m) for m in msgs])
+        try:
+            t = cfg["transport"]
+            if t == "http":
+                await self._send_http(cfg, events)
+                return
+            msgs = [syslog_message(e, cfg["format"], facility=cfg.get("syslog_facility", 13), hostname=self.hostname)
+                    for e in events]
+            if t == "syslog_udp":
+                await self._send_udp(cfg, msgs)
+            else:
+                await self._send_stream(cfg, [frame_tcp(m) for m in msgs])
+        except SiemError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - any failure must reach _failed (status, audit, backoff)
+            log.warning("siem.send.unexpected", error=type(exc).__name__)
+            raise SiemError(f"send failed ({type(exc).__name__})") from exc
 
     async def test(self, p: Principal) -> dict[str, Any]:
         cfg = await self._stored()

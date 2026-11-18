@@ -24,3 +24,13 @@ Sentinel (docs/high-availability.md).
 {{- end }}
 
 Check the installation: helm test {{ .Release.Name }} -n {{ .Release.Namespace }}
+{{- if not (.Values.api.trustedProxies | default .Values.mtls.trustedProxies) }}
+
+WARNING: api.trustedProxies is empty, so the gateway sees every client as a web UI pod. Set it to the pod
+address range for real client addresses in login throttling, the audit log and source_cidrs policies.
+{{- end }}
+{{- if and .Values.ingress.enabled (not .Values.web.realIpFrom) }}
+
+WARNING: the ingress is enabled but web.realIpFrom is empty: every client appears as the ingress controller.
+Set web.realIpFrom to the ingress controller's address range (docs/kubernetes.md).
+{{- end }}

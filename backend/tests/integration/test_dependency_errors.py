@@ -95,7 +95,7 @@ async def test_outage_after_dispatch_is_never_retried(scenario, app, container, 
     # Had even that write failed, the claim would sit in EXECUTING. The sweep sees the dispatch record, so it
     # resolves the request as FAILED (outcome unknown) rather than run the call a second time or leave it in limbo.
     await container.repos.approvals.col.update_one(
-        {"_id": approval_id}, {"$set": {"status": "EXECUTING", "updated_at": utcnow() - timedelta(minutes=10)}})
+        {"_id": approval_id}, {"$set": {"status": "EXECUTING", "updated_at": utcnow() - timedelta(minutes=20)}})
     assert await container.invocations.release_stale_claims() == 1
     doc = await container.repos.approvals.get(s.tenant_id, approval_id)
     assert doc["status"] == "FAILED" and "sent to the upstream" in doc["execution"]["message"]
@@ -222,7 +222,7 @@ async def test_claim_abandoned_before_dispatch_is_returned_and_runs_once(scenari
     """A worker died after claiming (or a write failed during the outage): the sweep hands it back."""
     s, approval_id = await _approved(scenario, app)
     await container.repos.approvals.col.update_one(
-        {"_id": approval_id}, {"$set": {"status": "REVALIDATING", "updated_at": utcnow() - timedelta(minutes=10)}})
+        {"_id": approval_id}, {"$set": {"status": "REVALIDATING", "updated_at": utcnow() - timedelta(minutes=20)}})
     assert await container.invocations.release_stale_claims() == 1
     assert (await container.repos.approvals.get(s.tenant_id, approval_id))["status"] == "APPROVED"
     await container.approvals.enqueue(s.tenant_id, approval_id)

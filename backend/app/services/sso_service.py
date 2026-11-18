@@ -98,6 +98,12 @@ class SsoService:
             data["client_secret_enc"] = (self.encryptor.encrypt(body.client_secret.encode(), SECRET_AAD)
                                          if body.client_secret else None)
         else:
+            if cfg.get("client_secret_enc") and data["issuer"] != (cfg.get("issuer") or ""):
+                # The secret goes to the issuer's token endpoint: never to an issuer it wasn't entered for.
+                raise GatewayError(ErrorCode.VALIDATION_FAILED,
+                                   "Enter the client secret again (or clear it) when changing the issuer: a stored "
+                                   "secret is only sent to the issuer it was saved for.",
+                                   details=[{"field": "issuer"}])
             data["client_secret_enc"] = cfg.get("client_secret_enc")
         if data["issuer"]:
             self._issuer_ok(data["issuer"])
@@ -234,6 +240,24 @@ class SsoService:
                                 metadata={"issuer": claims["iss"], "source": "scim", "claim": link_claim})
         return await self.repos.users.get(user["_id"])
 
+    async def _link_refusal(self, user: dict[str, Any]) -> str | None:
+        """Why an existing account may not be linked by username; None if it may."""
+        if user.get("is_platform_admin"):
+            return "platform administrator accounts are never linked by username"
+        if user.get("auth_source") == "ldap":
+            return "directory accounts are never linked by username"
+        if await self._is_break_glass(user):
+            return "break-glass accounts are never linked by username"
+        return None
+
+    async def _is_break_glass(self, user: dict[str, Any]) -> bool:
+        name = str(user.get("username") or "").lower()
+        for key in ("oidc", "ldap"):
+            cfg = await self.repos.settings.get_value(key) or {}
+            if name in {str(n).lower() for n in cfg.get("break_glass_usernames") or []}:
+                return True
+        return False
+
     async def _provision(self, cfg: dict[str, Any], claims: dict[str, Any], source_ip: str) -> dict[str, Any]:
         issuer, subject = claims["iss"], claims["sub"]
         groups = self._groups(claims, cfg.get("groups_claim") or "groups")
@@ -259,11 +283,20 @@ class SsoService:
                             and not existing.get("oidc"))
                 if not linkable:
                     raise await self._deny("username belongs to another account", claims, source_ip, "account_conflict")
-                await self.repos.users.update(existing["_id"], {"oidc": {"issuer": issuer, "subject": subject}})
+                refusal = await self._link_refusal(existing)
+                if refusal:
+                    raise await self._deny(refusal, claims, source_ip, "account_conflict")
+                # The account becomes SSO-only: its local password stops working, so whoever set or knows it (for
+                # example the tenant administrator who created the account) can't sign in as the linked user.
+                await self.repos.users.update(existing["_id"], {
+                    "oidc": {"issuer": issuer, "subject": subject}, "auth_source": "oidc", "password_hash": None,
+                    "must_change_password": False})
+                await self.auth.revoke_user_sessions(existing["_id"])  # sessions opened with the old password
                 user = await self.repos.users.get(existing["_id"])
                 await self.audit.record(SYSTEM_TENANT, "user.oidc.linked", severity="high",
                                         principal={"type": "user", "id": existing["_id"], "name": username},
-                                        metadata={"issuer": issuer})
+                                        metadata={"issuer": issuer, "source": "username",
+                                                  "local_sign_in_removed": True})
             else:
                 if not cfg.get("jit_provisioning", True):
                     raise await self._deny("no account and JIT provisioning is off", claims, source_ip)
@@ -292,16 +325,18 @@ class SsoService:
             # come from SCIM, not from this ID token.
             await self.repos.users.update(user["_id"], updates)
             return await self.repos.users.get(user["_id"]) or user
-        if user.get("auth_source") == "oidc":
-            if name:
-                updates["display_name"] = name
-            if user.get("is_platform_admin") != is_admin:
-                updates["is_platform_admin"] = is_admin
-                await self.audit.record(SYSTEM_TENANT, "user.platform_admin.changed", severity="high",
-                                        principal={"type": "user", "id": user["_id"], "name": user["username"]},
-                                        metadata={"is_platform_admin": is_admin, "source": "oidc"})
-        elif is_admin and not user.get("is_platform_admin"):
-            updates["is_platform_admin"] = True
+        if user.get("auth_source") == "oidc" and name:
+            updates["display_name"] = name
+        # Every account signing in through SSO is linked to this IdP identity, so the platform-admin flag follows
+        # the IdP group both ways, and every change is audited. (Platform administrators and break-glass accounts
+        # are never linked by username, see _link_refusal.)
+        # Break-glass accounts are for when SSO is broken: the IdP never changes them (an account linked before
+        # break-glass linking was refused could otherwise lose its administrator rights on one SSO sign-in).
+        if bool(user.get("is_platform_admin")) != is_admin and not await self._is_break_glass(user):
+            updates["is_platform_admin"] = is_admin
+            await self.audit.record(SYSTEM_TENANT, "user.platform_admin.changed", severity="high",
+                                    principal={"type": "user", "id": user["_id"], "name": user["username"]},
+                                    metadata={"is_platform_admin": is_admin, "source": "oidc"})
         await self.repos.users.update(user["_id"], updates)
         await sync_memberships(self.repos, self.audit, user, desired, MANAGED_BY)
         return await self.repos.users.get(user["_id"]) or user

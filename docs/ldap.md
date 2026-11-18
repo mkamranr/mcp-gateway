@@ -54,7 +54,7 @@ session idle or absolute timeout. To cut access immediately, disable the user in
 | Referrals | Never followed, so credentials are never sent to a server the directory names. |
 | Account takeover | Local accounts never authenticate against the directory. Directory accounts are keyed on the unique ID. A directory user whose username belongs to another account is refused and audited. |
 | Password guessing | The same per-user-and-IP throttle as local sign-in. Failed attempts count; successful ones don't. Directory account lockout (AD `badPwdCount`) still applies. |
-| Service account | Needs read access only. Its password is write-only, stored AES-256-GCM encrypted, never returned by the API, and never written to the audit log. |
+| Service account | Needs read access only. Its password is write-only, stored AES-256-GCM encrypted, never returned by the API, and never written to the audit log. Changing the server URLs, StartTLS, the CA bundle or the bind DN requires entering it again, so a stored password is only sent where it was saved for. |
 | Directory outage | Directory users get `503`. Local accounts, including break-glass administrators, keep working. Servers are tried in order; the next one is used only if a server can't be reached, never after a wrong password, so a bad password isn't counted twice. |
 | Load | At most `LDAP_MAX_CONCURRENT_BINDS` (default 20) directory operations run at once per replica. Each has the configured timeout (default 5 s). |
 

@@ -22,5 +22,5 @@ USER 10001:10001
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD ["python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/health/live', timeout=3).status == 200 else 1)"]
-# --proxy-headers is only safe behind the bundled reverse proxy; restrict --forwarded-allow-ips accordingly.
-CMD ["uvicorn", "--factory", "app.main:create_app", "--host", "0.0.0.0", "--port", "8080", "--proxy-headers", "--forwarded-allow-ips", "*", "--no-server-header"]
+# X-Forwarded-* are handled by the app (app/api/proxy.py), believed only from TRUSTED_PROXIES.
+CMD ["uvicorn", "--factory", "app.main:create_app", "--host", "0.0.0.0", "--port", "8080", "--no-proxy-headers", "--no-server-header"]

@@ -10,6 +10,8 @@ RiskLevel = Literal["low", "medium", "high", "critical"]
 Transport = Literal["streamable_http", "stdio"]
 AuthMode = Literal["none", "bearer", "header", "env"]
 Environment = Literal["development", "test", "production"]
+ApproverRole = Literal["approver", "security_admin", "tenant_admin", "platform_admin"]
+DEFAULT_APPROVER_ROLES: tuple[ApproverRole, ...] = ("approver", "security_admin", "tenant_admin")
 
 ALIAS_PATTERN = r"^[a-z][a-z0-9-]{0,30}[a-z0-9]$"
 
@@ -100,7 +102,8 @@ class ServerUpdate(Strict):
 
 class ApprovalPolicyConfig(Strict):
     required_approvals: Literal[1, 2] = 1
-    approver_roles: list[str] = Field(default_factory=lambda: ["approver", "security_admin", "tenant_admin"])
+    approver_roles: list[ApproverRole] = Field(default_factory=lambda: list(DEFAULT_APPROVER_ROLES), min_length=1,
+                                               max_length=5)
     allow_self_approval: bool = False
     ttl_minutes: int = Field(default=60, ge=1, le=10080)
     require_comment_on_reject: bool = True

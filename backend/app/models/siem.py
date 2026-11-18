@@ -82,6 +82,9 @@ class SiemConfigBase(Strict):
                 raise ValueError("A syslog host is required")
         if self.http_body == "splunk_hec" and self.format != "json":
             raise ValueError("Splunk HEC requires the JSON format")
+        if not self.tls_verify_hostname and not self.tls_ca_pem:
+            # Without a pinned CA, any publicly trusted certificate for any name would be accepted.
+            raise ValueError("Turning off host name verification requires a CA bundle (tls_ca_pem)")
         return self
 
 
@@ -89,3 +92,11 @@ class SiemConfigUpdate(SiemConfigBase):
     # Write-only value of the HTTP auth header (e.g. "Splunk <token>", "Bearer <token>"). Omit (null) to keep
     # the stored value; "" clears it.
     http_auth_value: str | None = Field(default=None, max_length=4096, repr=False)
+
+    @field_validator("http_auth_value")
+    @classmethod
+    def _auth_value(cls, v: str | None) -> str | None:
+        # An HTTP header value: visible ASCII and spaces only (anything else can't be sent and would stop forwarding).
+        if v and not all(0x20 <= ord(c) <= 0x7E for c in v):
+            raise ValueError("The auth value may contain printable ASCII characters only")
+        return v

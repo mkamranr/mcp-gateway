@@ -20,6 +20,8 @@ x-backend: &backend
     BOOTSTRAP_ADMIN_PASSWORD_FILE: /run/secrets/bootstrap_admin_password
     MONGODB_URI_FILE: /run/secrets/mongodb_uri
     REDIS_URL_FILE: /run/secrets/redis_url
+    # Only web-ui's X-Forwarded-For is believed (docs/security-model.md); everyone else is seen as they connect.
+    TRUSTED_PROXIES: ${MGW_EDGE_SUBNET:-172.31.250.0/24}
   secrets: [session_secret, data_encryption_key, api_key_hash_pepper, bootstrap_admin_password, mongodb_uri, redis_url]
   read_only: true
   tmpfs: ["/tmp:size=64m,mode=1777"]
@@ -94,11 +96,13 @@ services:
     image: redis:7.4.1-alpine
     # The password comes from a secret file. AOF persistence keeps quota windows and the job queue across restarts.
     user: "redis"  # the image's non-root user (uid 999), which owns /data
-    entrypoint: ["sh", "-c", "exec redis-server --requirepass \"$$(cat /run/secrets/redis_password)\" --appendonly yes --protected-mode yes --maxmemory 512mb --maxmemory-policy noeviction"]
+    # The password goes into a config file (printf is a shell builtin), never onto a command line: `ps` on the
+    # host shows container processes' arguments.
+    entrypoint: ["sh", "-c", "umask 077 && printf 'requirepass \"%s\"\\n' \"$$(cat /run/secrets/redis_password)\" > /tmp/redis.conf && exec redis-server /tmp/redis.conf --appendonly yes --protected-mode yes --maxmemory 512mb --maxmemory-policy noeviction"]
     secrets: [redis_password]
     volumes: ["redis-data:/data"]
     healthcheck:
-      test: ["CMD-SHELL", "redis-cli -a \"$$(cat /run/secrets/redis_password)\" --no-auth-warning ping | grep -q PONG"]
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$(cat /run/secrets/redis_password)\" redis-cli ping | grep -q PONG"]
       interval: 15s
       timeout: 5s
       retries: 10

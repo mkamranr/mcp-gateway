@@ -43,7 +43,9 @@ fi
 docker compose stop web-ui gateway-api worker
 docker compose up -d --wait --wait-timeout 180 mongodb
 docker compose exec -T mongodb sh -c \
-  'mongorestore --quiet --archive --gzip --drop --nsInclude "$1.*" -u mgw_root -p "$(cat /run/secrets/mongo_root_password)" --authenticationDatabase admin' \
+  'umask 077; f="$(mktemp)"; printf "password: \"%s\"\n" "$(cat /run/secrets/mongo_root_password)" > "$f"
+   mongorestore --quiet --archive --gzip --drop --nsInclude "$1.*" -u mgw_root --config "$f" --authenticationDatabase admin; rc=$?
+   rm -f "$f"; exit $rc' \
   sh "$DB" < "$ARCHIVE"
 echo "restored database $DB"
 

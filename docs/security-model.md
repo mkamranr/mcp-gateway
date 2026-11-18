@@ -41,10 +41,25 @@ claim equal to the SCIM `externalId`, never by username. See [scim.md](scim.md).
 | `security_admin` | tenant | policies, tool risk/enablement, keys, approvals, audit, server enable/disable/test |
 | `approver` | tenant | decide approval requests |
 | `auditor` | tenant | read audit, invocations, users |
-| `developer` | tenant | register servers, refresh tools, register agents, simulate policies |
+| `developer` | tenant | register streamable HTTP servers, refresh tools, register agents, simulate policies |
 
 Role checks happen on the server for every route (`require_user(*roles)`). The console hides controls as a
 convenience only.
+
+Some actions need more than the route's role:
+
+- **stdio servers:** only platform administrators can create them or change their command, arguments,
+  environment or working directory. A stdio server is a process on the gateway host, shared by all tenants.
+- **Re-pointing a server** (endpoint, TLS verification, CA bundle, or a stdio command): the stored credential
+  and client certificate must be entered again in the same change, and only an administrator may re-point a
+  server that is allowed to reach private networks. The same rule applies to the SIEM, SSO and LDAP
+  credentials.
+- **Audit retention:** tenant administrators can lengthen it; only platform administrators can shorten it.
+- **Accounts in other tenants:** tenant administrators can't add, rename or sign out an account that belongs
+  to another tenant or is a platform administrator. Ask a platform administrator.
+- **Separation of duties:** the agent's owner and creator, the user who issued the calling credential and the
+  user who delegated to the agent can't approve its requests, and administrators can't delegate another
+  approver's authority to themselves.
 
 ## Tenant isolation
 
@@ -137,11 +152,20 @@ development only and is ignored in production.
   ranges are always blocked. Private and loopback ranges are blocked unless both the platform setting and the
   per-server flag allow them. Redirects are not followed.
 - stdio servers: the executable must be on `STDIO_EXECUTABLE_ALLOWLIST`. No shell is used. Arguments are
-  passed verbatim and checked for shell metacharacters. Dangerous environment variables (`LD_PRELOAD`,
-  `PYTHONPATH`, …) are refused.
+  passed verbatim (checked for NUL bytes and length only: they are not interpreted by a shell, but an
+  allowlisted interpreter or launcher runs whatever they say, so allowlist only the servers themselves).
+  Dangerous environment variables (`LD_PRELOAD`, `PYTHONPATH`, …) are refused. Platform administrators only.
 - Upstream errors are sanitized. Endpoints, stack traces and credentials never reach agents.
 - Per server: a custom CA bundle for the upstream's certificate, and a client certificate for upstreams that
   require mTLS. The private key is write-only and encrypted ([mtls.md](mtls.md#upstream-servers-that-require-mtls)).
+
+## Client addresses
+
+The gateway believes `X-Forwarded-For` and `X-Forwarded-Proto` only from `TRUSTED_PROXIES` (the edge network
+in Compose, `api.trustedProxies` in Helm) and `MTLS_TRUSTED_PROXIES`; anyone else is seen as they connect.
+nginx overwrites `X-Forwarded-For` with the address it saw. If a further load balancer sits in front of
+nginx, configure nginx's real-IP support for it (`web.realIpFrom` in Helm), or every client shares the load
+balancer's address. The client address feeds login throttling, `source_cidrs` policies and the audit log.
 
 ## Secrets and cryptography
 

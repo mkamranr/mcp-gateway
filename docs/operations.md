@@ -204,6 +204,15 @@ mv secrets/data_encryption_key secrets/data_encryption_key.old && mv secrets/dat
 docker compose up -d gateway-api worker
 ```
 
+The tool re-encrypts:
+- upstream credentials;
+- approval arguments and results;
+- the SSO client secret;
+- the SIEM collector credential;
+- the LDAP service account password.
+
+`verify_data` checks the same set.
+
 The tool is idempotent (values already on the new key are skipped), uses compare-and-set updates, never
 prints keys or plaintext, and exits non-zero if any value could not be rotated. Destroy the old key only after
 verifying that servers still connect (Test connection) and pending approvals still show *integrity verified*.
@@ -229,8 +238,11 @@ Applies when single sign-on is enabled ([docs/sso.md](sso.md)).
 5. Keep break-glass credentials in a sealed, audited store (a safe or a password vault with dual control),
    and rotate them after each use.
 
-**Removing a user's access urgently:** removing them from an IdP group takes effect at their next sign-in.
-To end an active session immediately, disable the user or their membership in **Users & Tenants**.
+**Removing a user's access urgently:** removing them from an IdP group takes effect at their next sign-in
+(at once with SCIM). To end an active session immediately, disable the user or their membership in **Users &
+Tenants**. A membership disabled by an administrator stays disabled: SSO, directory and SCIM group sync never
+re-enable it, even while the person is still in the mapped group. Only an administrator re-enabling it restores
+the access, so remember to do that, or to remove them from the group, once the incident is over.
 
 **Rotating the IdP client secret:** create the new secret at the IdP, paste it into **Settings → Single sign-on**
 and save, then revoke the old secret at the IdP. The secret is stored encrypted with `DATA_ENCRYPTION_KEY`

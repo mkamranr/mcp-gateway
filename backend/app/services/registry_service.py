@@ -23,6 +23,7 @@ from app.mcp.net_guard import NetPolicy, validate_url
 from app.models.registry import ClientCertificateInput, ServerCreate, ServerUpdate, ToolUpdate
 from app.repositories.collections import Repos
 from app.services.audit_service import AuditService
+from app.services.validation_service import unsafe_schema_patterns
 
 TOOL_NAME_RE = re.compile(r"^[A-Za-z0-9_\-.]{1,64}$")
 MAX_SCHEMA_BYTES = 256 * 1024
@@ -36,6 +37,28 @@ def upstream_error_to_gateway(exc: UpstreamError) -> GatewayError:
     }.get(exc.kind, ErrorCode.UPSTREAM_UNAVAILABLE)
     msg = exc.detail if exc.kind == "blocked" else None
     return GatewayError(code, msg)
+
+
+# Where a server's requests (and its stored credentials) go. Changing any of these re-points the server.
+DESTINATION_KEYS = ("endpoint", "command", "args", "env", "cwd", "verify_tls", "tls_ca_pem")
+
+
+def private_network_allowed(settings: Settings, server_flag: bool) -> bool:
+    """Private and loopback upstreams need both opt-ins: the platform setting and the per-server flag."""
+    return bool(settings.allow_private_upstream_networks and server_flag)
+
+
+def server_config_fingerprint(server: dict[str, Any]) -> str:
+    """A hash of everything that decides where a server's calls go and with which credentials.
+
+    Recorded on approval requests, so an approved call can't run against a server that was re-pointed since."""
+    cfg = server.get("connection_config") or {}
+    return sha256_hex(canonical_json({
+        "transport": server.get("transport"),
+        "destination": {k: cfg.get(k) for k in DESTINATION_KEYS},
+        "secret_ref": server.get("secret_ref"), "tls_secret_ref": server.get("tls_secret_ref"),
+        "allow_private_network": bool(server.get("allow_private_network")),
+    }))
 
 
 class RegistryService:
@@ -52,7 +75,7 @@ class RegistryService:
     def _validate_connection(self, transport: str, cfg: dict[str, Any], allow_private: bool) -> None:
         if transport == "streamable_http":
             policy = NetPolicy(
-                allow_private=self.settings.allow_private_upstream_networks or allow_private,
+                allow_private=private_network_allowed(self.settings, allow_private),
                 host_allowlist=tuple(self.settings.upstream_host_allowlist),
             )
             validate_url(cfg.get("endpoint") or "", policy)
@@ -70,6 +93,14 @@ class RegistryService:
             raise GatewayError(
                 ErrorCode.ACCESS_DENIED, "Only administrators may permit private network destinations."
             )
+
+    @staticmethod
+    def _check_stdio_permission(principal: Principal) -> None:
+        # A stdio server is a process on the gateway host, shared by every tenant: whoever picks its command,
+        # arguments and environment runs code there. Platform administrators only.
+        if not principal.has_any_role("platform_admin"):
+            raise GatewayError(ErrorCode.ACCESS_DENIED,
+                               "Only platform administrators may register or change stdio servers.")
 
     async def _store_secret(self, tenant_id: str, owner_id: str, secret: dict[str, Any], existing: str | None) -> str:
         if existing:
@@ -105,6 +136,8 @@ class RegistryService:
     # ------------------------------------------------------------------ servers
     async def create_server(self, p: Principal, data: ServerCreate) -> dict[str, Any]:
         self._check_private_permission(p, data.allow_private_network)
+        if data.transport != "streamable_http":
+            self._check_stdio_permission(p)
         cfg: dict[str, Any] = {
             "endpoint": data.endpoint,
             "command": data.command,
@@ -210,6 +243,23 @@ class RegistryService:
         allow_private = fields.get("allow_private_network", current.get("allow_private_network", False))
         if "allow_private_network" in fields:
             self._check_private_permission(p, bool(fields["allow_private_network"]))
+        old_cfg = current.get("connection_config") or {}
+        repointed = any(cfg.get(k) != old_cfg.get(k) for k in DESTINATION_KEYS)
+        if repointed:
+            # The stored credentials and the private-network grant were given for the old destination.
+            if current["transport"] != "streamable_http":
+                self._check_stdio_permission(p)
+            if allow_private:
+                self._check_private_permission(p, True)
+            if current.get("secret_ref") and data.secret is None:
+                raise GatewayError(
+                    ErrorCode.VALIDATION_FAILED,
+                    "Re-enter the server's credential when changing where it connects: a stored credential is "
+                    "never sent to a new destination.")
+            if current.get("tls_secret_ref") and not (data.client_certificate or data.remove_client_certificate):
+                raise GatewayError(
+                    ErrorCode.VALIDATION_FAILED,
+                    "Upload the client certificate again (or remove it) when changing where the server connects.")
         if cfg != current.get("connection_config") or "allow_private_network" in fields:
             self._validate_connection(current["transport"], cfg, allow_private)
             changes["connection_config"] = cfg
@@ -227,6 +277,7 @@ class RegistryService:
         await self.audit.record(
             p.tenant_id, event, principal=p, resource={"server_id": server_id, "server_name": doc["name"]},
             metadata={"changed_fields": sorted(set(changes) - {"updated_by"}), "secret_rotated": data.secret is not None,
+                      "destination_changed": repointed,
                       "client_certificate": "replaced" if data.client_certificate else
                       "removed" if data.remove_client_certificate else None},
         )
@@ -308,6 +359,10 @@ class RegistryService:
                 Draft202012Validator.check_schema(t.output_schema)
         except SchemaError:
             return "invalid JSON schema"
+        # Schemas come from the upstream: a regular expression that backtracks catastrophically would let any
+        # caller stall the gateway's event loop (validation is synchronous).
+        if unsafe_schema_patterns(t.input_schema) or (t.output_schema and unsafe_schema_patterns(t.output_schema)):
+            return "unsafe regular expression in schema"
         return None
 
     async def refresh_tools(self, p: Principal | None, server: dict[str, Any]) -> dict[str, Any]:

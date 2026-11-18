@@ -15,14 +15,15 @@ function Form({ cfg }: { cfg: ScimConfig }) {
   const [enabled, setEnabled] = useState(cfg.enabled)
   const [linkClaim, setLinkClaim] = useState(cfg.link_claim)
   const [authoritative, setAuthoritative] = useState(cfg.groups_authoritative)
+  const [byName, setByName] = useState(cfg.match_group_display_name)
   const [err, setErr] = useState<ApiError | null>(null)
   const [token, setToken] = useState<string | null>(null)
-  useEffect(() => { setEnabled(cfg.enabled); setLinkClaim(cfg.link_claim); setAuthoritative(cfg.groups_authoritative) }, [cfg])
+  useEffect(() => { setEnabled(cfg.enabled); setLinkClaim(cfg.link_claim); setAuthoritative(cfg.groups_authoritative); setByName(cfg.match_group_display_name) }, [cfg])
   const qc = useQueryClient()
   const toast = useToast()
   const refresh = () => qc.invalidateQueries({ queryKey: ['scim-config'] })
   const save = useMutation({
-    mutationFn: () => api.put<ScimConfig>('/scim/config', { enabled, link_claim: linkClaim, groups_authoritative: authoritative }),
+    mutationFn: () => api.put<ScimConfig>('/scim/config', { enabled, link_claim: linkClaim, groups_authoritative: authoritative, match_group_display_name: byName }),
     onSuccess: () => { setErr(null); refresh(); toast.ok('Provisioning settings saved') },
     onError: e => e instanceof ApiError ? setErr(e) : toast.error(e),
   })
@@ -57,7 +58,8 @@ function Form({ cfg }: { cfg: ScimConfig }) {
         <input value={linkClaim} onChange={e => setLinkClaim(e.target.value)} placeholder="sub" />
       </Field>
       <div className="toggle-row"><span>Roles from SCIM groups (the single sign-on group rules are applied to the pushed groups). Off: roles come from the ID token at each sign-in.</span><Switch on={authoritative} onChange={setAuthoritative} label="SCIM groups authoritative" /></div>
-      <p className="muted" style={{ fontSize: 10 }}>Group rules and platform-administrator groups are configured under Single sign-on. A rule matches a SCIM group by its display name or external ID.</p>
+      <div className="toggle-row"><span>Match groups without an external ID by display name. Only for identity providers that send no externalId: anyone who can create a provisioned group could name it after an administrator group.</span><Switch on={byName} onChange={setByName} label="Match groups by display name" /></div>
+      <p className="muted" style={{ fontSize: 10 }}>Group rules and platform-administrator groups are configured under Single sign-on. A rule matches a SCIM group by its external ID{byName ? ', or by its display name if the group has no external ID' : ''}.</p>
       <div className="form-actions" style={{ borderTop: 0, paddingTop: 0 }}>
         <button className="btn primary" disabled={save.isPending} onClick={() => save.mutate()}>{save.isPending ? <Loader2 size={13} className="spin" /> : <Save size={13} />}Save</button>
         {cfg.updated_at && <span className="muted" style={{ fontSize: 10, alignSelf: 'center' }}><CheckCircle2 size={10} /> Last saved {dateTime(cfg.updated_at)}</span>}

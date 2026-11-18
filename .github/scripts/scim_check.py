@@ -121,15 +121,16 @@ def main() -> None:
     expect("Entra-style PATCH", status == 200 and body.get("displayName") == "Ivy E.", (status, body))
 
     # ---- groups -> roles
-    status, group, _ = scim("POST", "/Groups", {"schemas": [GROUP], "displayName": "mgw-developers", "members": []})
+    status, group, _ = scim("POST", "/Groups", {"schemas": [GROUP], "displayName": "Developers", "externalId": "mgw-developers",
+                                                "members": []})
     expect("create group", status == 201, (status, group))
     status, _, _ = scim("PATCH", f"/Groups/{group['id']}", {"schemas": [PATCH], "Operations": [
         {"op": "Add", "path": "members", "value": [{"value": ivy["id"]}]}]})
     expect("add member: 204, developer role at once", status == 204 and roles(ivy["id"]) == ["developer"],
            (status, roles(ivy["id"])))
     status, _, _ = scim("PATCH", f"/Groups/{group['id']}", {"schemas": [PATCH], "Operations": [
-        {"op": "Replace", "value": {"displayName": "mgw-auditors"}}]})
-    expect("rename group: role follows the rules", status == 204 and roles(ivy["id"]) == ["auditor"], roles(ivy["id"]))
+        {"op": "Replace", "value": {"externalId": "mgw-auditors"}}]})
+    expect("new externalId: role follows the rules", status == 204 and roles(ivy["id"]) == ["auditor"], roles(ivy["id"]))
     status, _, _ = scim("PATCH", f"/Groups/{group['id']}", {"schemas": [PATCH], "Operations": [
         {"op": "Remove", "path": "members", "value": [{"value": ivy["id"]}]}]})
     expect("remove member: role gone", status == 204 and roles(ivy["id"]) == [], roles(ivy["id"]))

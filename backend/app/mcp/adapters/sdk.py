@@ -16,7 +16,7 @@ from mcp.client.streamable_http import streamable_http_client
 
 from app.core.errors import GatewayError
 from app.mcp.adapters.base import HealthResult, ServerConfig, ToolDefinition, ToolResult, UpstreamError
-from app.mcp.net_guard import NetPolicy, guarded_client, validate_url
+from app.mcp.net_guard import DEFAULT_MAX_RESPONSE_BYTES, NetPolicy, guarded_client, validate_url
 
 SHELL_METACHARS = set(";|&$`<>\n\r\x00")
 FORBIDDEN_ENV = {"LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES", "PYTHONSTARTUP", "NODE_OPTIONS",
@@ -53,9 +53,11 @@ def validate_stdio_config(command: str, args: list[str], env: dict[str, str], al
 class SdkAdapter:
     """Opens one upstream MCP session for the lifetime of ``connect()``..``close()``."""
 
-    def __init__(self, net_policy: NetPolicy, stdio_allowlist: list[str]) -> None:
+    def __init__(self, net_policy: NetPolicy, stdio_allowlist: list[str],
+                 max_response_bytes: int = DEFAULT_MAX_RESPONSE_BYTES) -> None:
         self.net_policy = net_policy
         self.stdio_allowlist = stdio_allowlist
+        self.max_response_bytes = max_response_bytes
         self._stack: AsyncExitStack | None = None
         self._client: Client | None = None
         self._config: ServerConfig | None = None
@@ -76,6 +78,7 @@ class SdkAdapter:
                     headers=config.headers,
                     timeout=config.request_timeout_seconds,
                     verify=config.ssl_context if config.ssl_context is not None else config.verify_tls,
+                    max_response_bytes=self.max_response_bytes,
                 )
                 await stack.enter_async_context(http)
                 server: Any = streamable_http_client(config.endpoint, http_client=http)
@@ -188,4 +191,6 @@ def _sanitize(exc: BaseException) -> str:
         return "Timed out"
     if "HTTPStatus" in name:
         return "Upstream returned an HTTP error"
+    if "ResponseTooLarge" in name:
+        return "Upstream response too large"
     return name

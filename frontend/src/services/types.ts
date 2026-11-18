@@ -56,7 +56,7 @@ export interface TrustedIssuer {
 }
 export interface AgentOAuthConfig { enabled: boolean; issuers: TrustedIssuer[]; resource: string; metadata_url: string; updated_at: string | null; updated_by: string | null }
 export interface ScimConfig {
-  enabled: boolean; link_claim: string; groups_authoritative: boolean; has_token: boolean; token_prefix: string | null
+  enabled: boolean; link_claim: string; groups_authoritative: boolean; match_group_display_name: boolean; has_token: boolean; token_prefix: string | null
   token_created_at: string | null; last_used_at: string | null; base_url: string; updated_at: string | null; token?: string
 }
 export interface AgentOAuthStatus { enabled: boolean; issuers: { issuer: string; display_name: string; subject_claim: string }[] }
@@ -177,6 +177,7 @@ export interface Approval {
   execution: { error_code?: string; message?: string; status?: string } | null; created_at: string
   arguments?: unknown; integrity?: string; changes_since_request?: string[]; related_invocations?: Invocation[]
   separation_of_duties_warning?: boolean; can_decide?: boolean; cannot_decide_reason?: string | null
+  preview_gaps?: ('items_omitted' | 'text_truncated' | 'nesting_truncated' | 'fields_masked')[]
   decide_as?: { on_behalf_of: string; on_behalf_of_name: string; delegation_id: string } | null
   escalate_at?: string | null; escalated_at?: string | null
 }

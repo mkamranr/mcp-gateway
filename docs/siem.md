@@ -37,6 +37,20 @@ The transitions are audited and forwarded too: `siem.forwarding.failed` (once, w
 | Syslog over UDP | RFC 5424, RFC 5426 | 514 | Not encrypted, and **no delivery confirmation**: losses can't be detected. Only for legacy collectors. |
 | HTTP(S) collector | POST, no redirects followed | n/a | Body: one event per line (NDJSON), a JSON array, or Splunk HEC. Optional auth header (write-only, stored AES-256-GCM encrypted). Any non-2xx response counts as a failure and is retried. |
 
+**Destination rules:**
+- **Blocked addresses:** link-local and cloud-metadata addresses (169.254.0.0/16, including the AWS ECS
+  credentials endpoint), CGNAT, multicast and unspecified addresses are refused. This is checked when you save,
+  and again at every connection after DNS resolution; the gateway connects to the address it checked.
+  Private networks are allowed, since collectors usually live there.
+- **Credential bound to the destination:** the stored auth value is only sent where it was saved for. Changing
+  the transport, host, port, URL, auth header name or TLS settings requires entering it again (or clearing it).
+- **Host name verification:** turning it off requires a pinned CA certificate. Otherwise any publicly trusted
+  certificate for any name would be accepted.
+- **Production:** an `http://` collector URL is refused while an auth value is stored.
+- **Auth value characters:** the auth value must be printable ASCII.
+- **Test errors:** *Send test event* reports a generic error (could not connect, timed out, TLS handshake
+  failed). The underlying error is written to the worker log only.
+
 Syslog header: `<PRI>1 <timestamp> <gateway host> mcp-gateway - <event_type> - <message>`. PRI uses the
 configured facility (default 13, *log audit*) and a severity mapped from the event: info→6, warning→4,
 high→3, critical→2.
@@ -118,7 +132,7 @@ event sent, and the last error. Prometheus (`/api/v1/metrics`) exposes `mgw_siem
 | Method | Path | Notes |
 |---|---|---|
 | GET | `/siem/config` | Returns `has_http_auth_value`, never the value |
-| PUT | `/siem/config` | Full configuration. `http_auth_value`: omit to keep, `""` to clear. Audited. |
+| PUT | `/siem/config` | Full configuration. `http_auth_value`: omit to keep (only while the destination and TLS settings stay the same), `""` to clear. Audited. |
 | GET | `/siem/status` | Forwarding status |
 | POST | `/siem/test` | Sends one `siem.test` event using the saved settings |
 

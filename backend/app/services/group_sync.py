@@ -2,7 +2,8 @@
 
 At every external sign-in the user's groups are mapped to tenant roles through the group rules, and the
 memberships that source created are re-synchronised: a group removed at the IdP or in the directory removes
-the access here. Memberships created by hand, or by another source, are never touched.
+the access here. Memberships created by hand, or by another source, are never touched, and neither is a
+membership an administrator disabled (``disabled_by_admin``): sync never re-enables it.
 """
 
 from __future__ import annotations
@@ -44,6 +45,10 @@ async def sync_memberships(repos: Repos, audit: AuditService, user: dict[str, An
                                                        "status": "active", "managed_by": source})
             await audit.record(tenant_id, "user.membership.created", principal=actor, resource=who,
                                metadata={"roles": role_list, "source": source})
+        elif m.get("disabled_by_admin"):
+            # An administrator disabled this membership (for example, to remove access urgently). Group sync
+            # never re-enables it; only an administrator can.
+            continue
         elif m.get("managed_by") == source and (m.get("roles") != role_list or m.get("status") != "active"):
             await repos.memberships.update(tenant_id, m["_id"], {"roles": role_list, "status": "active"})
             await audit.record(tenant_id, "user.membership.changed", principal=actor, resource=who,

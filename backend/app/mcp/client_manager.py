@@ -57,11 +57,14 @@ class ClientManager:
         self.adapter_factory: Callable[[dict[str, Any]], MCPServerAdapter] = self._default_factory
 
     def net_policy_for(self, server: dict[str, Any]) -> NetPolicy:
-        allow_private = self.settings.allow_private_upstream_networks or bool(server.get("allow_private_network"))
+        # Both opt-ins (docs/security-model.md): the platform setting and the per-server flag.
+        allow_private = self.settings.allow_private_upstream_networks and bool(server.get("allow_private_network"))
         return NetPolicy(allow_private=allow_private, host_allowlist=tuple(self.settings.upstream_host_allowlist))
 
     def _default_factory(self, server: dict[str, Any]) -> MCPServerAdapter:
-        return SdkAdapter(self.net_policy_for(server), self.settings.stdio_executable_allowlist)
+        # Room for the protocol envelope around a tool result of the largest allowed size.
+        return SdkAdapter(self.net_policy_for(server), self.settings.stdio_executable_allowlist,
+                          max_response_bytes=4 * self.settings.max_output_bytes)
 
     async def build_config(self, server: dict[str, Any]) -> ServerConfig:
         cfg = server.get("connection_config", {})

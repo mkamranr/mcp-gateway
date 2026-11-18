@@ -32,7 +32,7 @@ from app.services.audit_service import AuditService
 from app.services.auth_service import AuthService
 from app.services.policy_service import PolicyDecision, PolicyService, RequestContext
 from app.services.quota_service import QuotaService
-from app.services.registry_service import upstream_error_to_gateway
+from app.services.registry_service import server_config_fingerprint, upstream_error_to_gateway
 from app.services.validation_service import ValidationService
 
 log = get_logger(__name__)
@@ -63,6 +63,8 @@ async def persist[T](op: Callable[[], Awaitable[T]], seconds: float = PERSIST_FO
             await anyio.sleep(delay)
             delay = min(delay * 2, 4.0)
 
+# Upper bounds of a server's request_timeout_seconds (also the slot wait) and connection_timeout_seconds.
+MAX_SLOT_WAIT_SECONDS, MAX_CONNECT_SECONDS = 300, 120
 
 @dataclass
 class InvocationContext:
@@ -260,6 +262,16 @@ class InvocationService:
                         or approved_doc.get("agent_id") != principal.agent_id):
                     raise await deny(ErrorCode.APPROVAL_INVALIDATED, "The approval does not match this request.",
                                      policy=decision)
+                # The approver saw this tool definition and this server: a schema acknowledged since, or a server
+                # re-pointed to another destination or credential, needs a new approval.
+                if "tool_schema_hash" in approved_doc and approved_doc["tool_schema_hash"] != tool.get("schema_hash"):
+                    raise await deny(ErrorCode.APPROVAL_INVALIDATED,
+                                     "The tool definition changed after the approval was requested.", policy=decision)
+                if (approved_doc.get("server_config_hash")
+                        and approved_doc["server_config_hash"] != server_config_fingerprint(server)):
+                    raise await deny(ErrorCode.APPROVAL_INVALIDATED,
+                                     "The server's destination or credentials changed after the approval was "
+                                     "requested.", policy=decision)
             else:
                 # Rate limits still apply to approval requests to prevent approval flooding.
                 try:
@@ -346,7 +358,10 @@ class InvocationService:
                                                                    if k in ("redacted_fields", "output_bytes")}}
             return InvocationOutcome(inv_id, status, content, structured, bool(result.is_error), metadata=meta)
         finally:
-            await self.quotas.release_concurrency(conc_keys)
+            # Shielded: a caller that disconnects cancels this task, and an unreleased slot would hold the tool's
+            # concurrency counter until its TTL, locking other callers out.
+            with anyio.CancelScope(shield=True):
+                await self.quotas.release_concurrency(conc_keys)
 
     # ------------------------------------------------------------------ approved execution (worker)
     async def execute_approved(self, tenant_id: str, approval_id: str) -> str:
@@ -397,13 +412,20 @@ class InvocationService:
                 {"$set": {"status": "superseded", "idempotency_key": f"{key}:superseded:{d['_id']}",
                           "updated_at": utcnow()}})
 
-    async def release_stale_claims(self, older_than: timedelta = timedelta(minutes=5)) -> int:
+    def stale_claim_cutoff(self) -> timedelta:
+        """How long a claim may last before it counts as abandoned: longer than the slowest legitimate execution,
+        so a call that is still running is never marked FAILED under its worker. That is the longest wait for a
+        server slot, plus connecting, plus the longest tool timeout, plus a margin."""
+        return timedelta(seconds=MAX_SLOT_WAIT_SECONDS + MAX_CONNECT_SECONDS
+                         + float(self.settings.max_tool_timeout_seconds) + 60)
+
+    async def release_stale_claims(self, older_than: timedelta | None = None) -> int:
         """Resolve claims abandoned by a crashed or cut-off worker (REVALIDATING/EXECUTING).
 
         No dispatch record holds the approval's idempotency key: the call never reached the upstream, so it goes
         back to APPROVED and runs later. A dispatch record exists: it may have reached the upstream, so it is
         never run again; it is marked FAILED with the outcome unknown instead of being left in limbo."""
-        cutoff, n = utcnow() - older_than, 0
+        cutoff, n = utcnow() - (older_than or self.stale_claim_cutoff()), 0
         for d in await self.repos.approvals.stale_claims_global(cutoff):
             key = f"approval:{d['_id']}"
             if await self.repos.invocations.find_one(d["tenant_id"], {"idempotency_key": key}):

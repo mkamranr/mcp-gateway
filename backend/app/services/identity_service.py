@@ -22,6 +22,7 @@ from app.models.identity import (
     AgentUpdate,
     MembershipUpdate,
     TenantCreate,
+    TenantSettings,
     TenantUpdate,
     UserCreate,
     credential_to_api,
@@ -114,15 +115,25 @@ class IdentityService:
             raise denied("Only platform administrators can suspend or reactivate tenants.")
         if not p.has_any_role(Role.PLATFORM_ADMIN, Role.TENANT_ADMIN):
             raise denied()
+        before = dict(tenant.get("settings") or {})
         if data.settings is not None:
             changes["settings"] = data.settings.model_dump()
+            new_days = changes["settings"]["audit_retention_days"]
+            old_days = int(before.get("audit_retention_days") or TenantSettings().audit_retention_days)
+            if new_days < old_days and not p.is_global_admin:
+                # A shorter retention makes the worker purge history: a tenant administrator could erase the record
+                # of their own actions. Only lengthening it is theirs to decide.
+                raise denied("Only platform administrators can shorten audit retention.")
         updated = await self.repos.tenants.update(tenant_id, changes)
         assert updated is not None
         event = "tenant.changed"
         if changes.get("status") and changes["status"] != tenant.get("status"):
             event = "tenant.suspended" if changes["status"] == "suspended" else "tenant.reactivated"
+        settings_diff = {k: {"from": before.get(k), "to": v} for k, v in (changes.get("settings") or {}).items()
+                         if before.get(k) != v}
         await self.audit.record(tenant_id, event, principal=p, resource={"tenant_id": tenant_id},
-                                metadata={"changed_fields": sorted(changes)})
+                                severity="high" if "audit_retention_days" in settings_diff else None,
+                                metadata={"changed_fields": sorted(changes), "settings_changed": settings_diff})
         return updated
 
     # ------------------------------------------------------------------ users / memberships
@@ -148,6 +159,10 @@ class IdentityService:
         self._require_tenant_access(p, tenant_id)
         user = await self.repos.users.by_username(data.username)
         temp_password = None
+        if user is not None and not p.is_global_admin and await self._belongs_elsewhere(user, tenant_id):
+            # Accounts are global: a tenant administrator must not pull in (and then manage) another tenant's user
+            # or a platform administrator.
+            raise denied("This account belongs to another tenant. Ask a platform administrator to add it.")
         if user is None:
             temp_password = data.password or random_token(18)
             user = await self.repos.users.insert({
@@ -178,14 +193,28 @@ class IdentityService:
                 data.roles is not None and Role.TENANT_ADMIN.value not in data.roles and not p.is_global_admin)):
             raise GatewayError(ErrorCode.CONFLICT, "You cannot remove your own administrator access.")
         changes = data.model_dump(exclude_unset=True, exclude={"display_name"})
+        if data.status is not None:
+            # Group sync (SSO, LDAP, SCIM) never re-activates a membership an administrator disabled.
+            changes["disabled_by_admin"] = data.status == "disabled"
+        if data.display_name and not p.is_global_admin:
+            user = await self.repos.users.get(user_id)
+            if user and await self._belongs_elsewhere(user, tenant_id):
+                raise denied("This account also belongs to other tenants. Ask a platform administrator to rename it.")
         updated = await self.repos.memberships.update(tenant_id, m["_id"], changes)
         if data.display_name:
             await self.repos.users.update(user_id, {"display_name": data.display_name})
         if data.status == "disabled" or data.roles is not None:
-            await self.auth.revoke_user_sessions(user_id)
+            await self.auth.revoke_user_sessions(user_id, None if p.is_global_admin else tenant_id)
         await self.audit.record(tenant_id, "user.membership.changed", principal=p, resource={"user_id": user_id},
                                 metadata=changes)
         return updated
+
+    async def _belongs_elsewhere(self, user: dict[str, Any], tenant_id: str) -> bool:
+        """A platform administrator, or a member (any status) of a tenant other than ``tenant_id``."""
+        if user.get("is_platform_admin"):
+            return True
+        return await self.repos.memberships.col.count_documents(
+            {"user_id": user["_id"], "tenant_id": {"$ne": tenant_id}}, limit=1) > 0
 
     # ------------------------------------------------------------------ agents
     async def create_agent(self, p: Principal, tenant_id: str, data: AgentCreate) -> dict[str, Any]:

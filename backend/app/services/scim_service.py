@@ -85,21 +85,29 @@ class ScimService:
         cfg = await self._stored()
         return {"enabled": bool(cfg.get("enabled")), "link_claim": cfg.get("link_claim") or "sub",
                 "groups_authoritative": cfg.get("groups_authoritative", True),
+                "match_group_display_name": bool(cfg.get("match_group_display_name", False)),
                 "has_token": bool(cfg.get("token_hash")), "token_prefix": cfg.get("token_prefix"),
                 "token_created_at": cfg.get("token_created_at"), "last_used_at": cfg.get("last_used_at"),
                 "base_url": self.settings.public_base_url.rstrip("/") + "/api/v1/scim/v2",
                 "updated_at": cfg.get("updated_at")}
 
-    async def update_config(self, p: Principal, enabled: bool, link_claim: str, groups_authoritative: bool) -> dict[str, Any]:
+    async def update_config(self, p: Principal, enabled: bool, link_claim: str, groups_authoritative: bool,
+                            match_group_display_name: bool = False) -> dict[str, Any]:
         cfg = await self._stored()
         if enabled and not cfg.get("token_hash"):
             raise GatewayError(ErrorCode.VALIDATION_FAILED, "Generate a SCIM token first.")
+        matching_changed = bool(cfg.get("match_group_display_name", False)) != match_group_display_name
         cfg.update({"enabled": enabled, "link_claim": link_claim, "groups_authoritative": groups_authoritative,
+                    "match_group_display_name": match_group_display_name,
                     "updated_at": utcnow().isoformat(), "updated_by": p.principal_id})
         await self.repos.settings.set_value(CONFIG_KEY, cfg, p.principal_id)
         await self.audit.record(p.tenant_id, "scim.config.updated", principal=p, severity="high",
                                 metadata={"enabled": enabled, "link_claim": link_claim,
-                                          "groups_authoritative": groups_authoritative})
+                                          "groups_authoritative": groups_authoritative,
+                                          "match_group_display_name": match_group_display_name})
+        if matching_changed:  # which groups match the rules changed: re-evaluate every provisioned user
+            ids = [u["_id"] async for u in self.repos.users.col.find({"scim": {"$exists": True}}, {"_id": 1})]
+            await self.resync(ids)
         return await self.admin_view()
 
     async def rotate_token(self, p: Principal) -> dict[str, Any]:
@@ -271,6 +279,9 @@ class ScimService:
                "scim": {}}
         doc.update(self._apply_user(doc, {"active": True, **f}))
         if existing:  # re-created after a SCIM delete: reuse the record (its audit history stays attached)
+            # userNames are recycled (UPN reuse), so this may be a different person: none of the previous
+            # owner's access carries over. Memberships come back only through this user's own groups.
+            await self._disable_memberships(existing, "SCIM user re-created")
             doc["scim"]["deleted"] = False
             await self.repos.users.col.update_one({"_id": existing["_id"]}, {"$set": {**doc, "updated_at": utcnow()},
                                                                              "$unset": {"oidc": ""}})
@@ -384,10 +395,21 @@ class ScimService:
         await self.repos.users.update(u["_id"], {"status": "disabled", "scim": {**(u.get("scim") or {}),
                                                                                   "deleted": True}})
         await self.auth.revoke_user_sessions(u["_id"])
+        # Every membership, hand-made ones included: a later user with the same userName must not inherit them.
+        await self._disable_memberships(u, "SCIM user deleted")
         await self.repos.scim_groups.col.update_many({"members": u["_id"]}, {"$pull": {"members": u["_id"]}})
         await self.resync([u["_id"]])
         await self.audit.record(SYSTEM_TENANT, "user.scim.deleted", principal=ACTOR, severity="high",
                                 resource={"user_id": u["_id"], "username": u["username"]})
+
+    async def _disable_memberships(self, user: dict[str, Any], reason: str) -> None:
+        """Disable all of ``user``'s active memberships, whoever created them, and audit each one."""
+        who = {"user_id": user["_id"], "username": user["username"]}
+        async for m in self.repos.memberships.col.find({"user_id": user["_id"], "status": "active"}):
+            await self.repos.memberships.update(m["tenant_id"], m["_id"], {"status": "disabled"})
+            await self.audit.record(m["tenant_id"], "user.membership.changed", principal=ACTOR, resource=who,
+                                    metadata={"status": "disabled", "roles": m.get("roles", []),
+                                              "managed_by": m.get("managed_by"), "reason": reason})
 
     # ------------------------------------------------------------------ groups
     async def _group(self, group_id: str) -> dict[str, Any]:
@@ -497,25 +519,33 @@ class ScimService:
         await self.resync(g.get("members", []))
 
     # ------------------------------------------------------------------ access
-    async def user_groups(self, user_id: str) -> set[str]:
+    async def user_groups(self, user_id: str, match_display_name: bool = False) -> set[str]:
+        """The names the group rules see for ``user_id``'s SCIM groups: each group's externalId.
+
+        displayName is not trusted by default: in many IdPs any user can create a group and name it freely, for
+        example after an admin group's object ID. With ``match_display_name``, a group *without* an externalId is
+        matched by its displayName; a group with one is still matched only by it."""
         names: set[str] = set()
         async for g in self.repos.scim_groups.col.find({"members": user_id}, {"displayName": 1, "externalId": 1}):
-            names.add(g["displayName"])
             if g.get("externalId"):
                 names.add(g["externalId"])
+            elif match_display_name:
+                names.add(g["displayName"])
         return names
 
     async def resync(self, user_ids: list[str]) -> None:
         """Re-apply the SSO group rules to these users from their SCIM groups. Takes effect on their next request.
 
         Only when SCIM groups are authoritative; otherwise memberships come from the ID token at sign-in."""
-        if not user_ids or not (await self._stored()).get("groups_authoritative", True):
+        cfg = await self._stored()
+        if not user_ids or not cfg.get("groups_authoritative", True):
             return
+        by_name = bool(cfg.get("match_group_display_name", False))
         sso = await self.repos.settings.get_value("oidc") or {}
         rules, admin_groups = sso.get("group_rules") or [], set(sso.get("platform_admin_groups") or [])
         async for u in self.repos.users.col.find({"_id": {"$in": list(user_ids)}, "scim": {"$exists": True}}):
             live = u.get("status") == "active" and not (u.get("scim") or {}).get("deleted")
-            groups = await self.user_groups(u["_id"]) if live else set()
+            groups = await self.user_groups(u["_id"], by_name) if live else set()
             await sync_memberships(self.repos, self.audit, u, desired_memberships(rules, groups), SOURCE,
                                    via="scim")
             is_admin = bool(groups & admin_groups)

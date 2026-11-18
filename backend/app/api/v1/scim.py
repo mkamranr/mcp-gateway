@@ -31,7 +31,8 @@ async def get_config(p: Principal = Depends(require_user(Role.PLATFORM_ADMIN)),
 @router.put("/scim/config")
 async def put_config(body: ScimConfigUpdate, p: Principal = Depends(require_user(Role.PLATFORM_ADMIN)),
                      c: Container = Depends(get_container)) -> dict[str, Any]:
-    return await c.scim.update_config(p, body.enabled, body.link_claim, body.groups_authoritative)
+    return await c.scim.update_config(p, body.enabled, body.link_claim, body.groups_authoritative,
+                                       body.match_group_display_name)
 
 
 @router.post("/scim/token")

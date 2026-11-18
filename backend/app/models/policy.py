@@ -8,7 +8,7 @@ from typing import Any, Literal
 
 from pydantic import Field, field_validator, model_validator
 
-from app.models.registry import Strict
+from app.models.registry import ApproverRole, Strict
 
 Action = Literal["discover", "invoke"]
 PATTERN = re.compile(r"^[A-Za-z0-9_\-.*]{1,160}$")
@@ -51,7 +51,6 @@ class Resources(Strict):
     _t = field_validator("tools")(_patterns)
 
 
-ApproverRole = Literal["approver", "security_admin", "tenant_admin", "platform_admin"]
 
 
 class Constraints(Strict):
@@ -61,7 +60,7 @@ class Constraints(Strict):
     max_calls_per_day: int | None = Field(default=None, ge=1)
     require_approval: bool = False
     required_approvals: Literal[1, 2] | None = None
-    approver_roles: list[str] | None = None
+    approver_roles: list[ApproverRole] | None = Field(default=None, min_length=1, max_length=5)
     # Only users in one of these SSO groups (as of their last SSO login) may approve. Narrows approver_roles.
     approver_groups: list[str] | None = Field(default=None, max_length=50)
     # A request still pending after this long is opened to escalation_roles too (and an audit event is raised).

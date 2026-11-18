@@ -86,6 +86,18 @@ migration you can turn on **Link SSO identities to existing local accounts**. Th
 the local account to that issuer and subject (audited as `user.oidc.linked`). Turn it off when the migration is
 done.
 
+What linking does and doesn't do:
+- **The account becomes SSO-only.** Its local password is removed, and sessions opened with that password end.
+  Whoever knew the password (for example the tenant administrator who created the account) can't sign in as the
+  linked user.
+- **Some accounts are never linked by username:** platform administrators, break-glass accounts and directory
+  (LDAP) accounts. The sign-in is refused with `account_conflict` and audited (`auth.oidc.denied`).
+- **The platform administrator flag follows the IdP group** (`platform_admin_groups`) for every account that
+  signs in through SSO, in both directions. Each change is audited as `user.platform_admin.changed`.
+
+Changing the **issuer** requires entering the client secret again (or clearing it), so a stored secret is never
+sent to a token endpoint it wasn't entered for.
+
 ## IdP setup
 
 In every case the redirect URI is `https://<gateway>/api/v1/auth/oidc/callback`, and the scopes are at least

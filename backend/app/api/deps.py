@@ -7,6 +7,7 @@ from typing import Any
 
 from fastapi import Depends, Request
 
+from app.api.proxy import peer_address
 from app.container import Container
 from app.core.crypto import constant_time_equals
 from app.core.errors import ErrorCode, GatewayError
@@ -36,7 +37,8 @@ async def get_principal(request: Request, c: Container = Depends(get_container))
     cached = getattr(request.state, "principal", None)
     if cached is not None:
         return cached  # type: ignore[no-any-return]
-    agent = await c.auth.authenticate_agent(request.headers, source=client_ip(request))
+    agent = await c.auth.authenticate_agent(request.headers, source=client_ip(request),
+                                            peer=peer_address(request.scope))
     if agent is not None:
         principal = agent
     else:

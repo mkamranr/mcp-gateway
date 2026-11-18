@@ -180,7 +180,7 @@ async def test_scim_cannot_see_or_take_over_other_accounts(app, admin, container
     r = await idp.patch("Users", u["id"], {"op": "replace", "path": "userName", "value": ADMIN_USER})
     assert r.status_code == 409
     # Local admins can't be added to SCIM groups (and so get no roles through them).
-    g = await idp.group("mgw-platform-admins", [local["_id"], u["id"]])
+    g = await idp.group("mgw-platform-admins", [local["_id"], u["id"]], external_id="mgw-platform-admins")
     assert [m["value"] for m in g["members"]] == [u["id"]]
     assert (await container.repos.users.get(local["_id"]))["status"] == "active"
     # The admin console still works.
@@ -191,7 +191,7 @@ async def test_deactivation_ends_sessions_at_once(app, admin, mock_idp, containe
     await configure(admin, mock_idp)
     idp = await enable(admin, app)
     u = await idp.user("bob.sso", "u-1002")
-    await idp.group("mgw-acme-developers", [u["id"]])
+    await idp.group("mgw-acme-developers", [u["id"]], external_id="mgw-acme-developers")
     async with make_client(app) as http:
         r = await sso_login(http, "bob")
         assert sso_error(r) is None
@@ -225,7 +225,7 @@ async def test_groups_drive_memberships_and_platform_admin(app, admin, mock_idp,
     r = await idp.patch("Groups", dev["id"], {"op": "Remove", "path": "members", "value": [{"value": b["id"]}]})
     assert r.status_code == 204 and await memberships(container, b["id"]) == {}
 
-    admins = await idp.group("mgw-platform-admins", [a["id"]])
+    admins = await idp.group("mgw-platform-admins", [a["id"]], external_id="mgw-platform-admins")
     assert (await container.repos.users.get(a["id"]))["is_platform_admin"] is True
     r = await idp.req("GET", f"/Groups/{admins['id']}", params={"excludedAttributes": "members"})
     assert "members" not in r.json()
@@ -251,7 +251,7 @@ async def test_sso_links_by_external_id_and_scim_groups_win(app, admin, mock_idp
     tenant = (await admin.get("/api/v1/auth/me")).json()["tenant_id"]
     idp = await enable(admin, app)
     u = await idp.user("bob.sso", "u-1002", displayName="Bob (HR)")
-    await idp.group("mgw-auditors", [u["id"]])  # the ID token says developers + auditors
+    await idp.group("mgw-auditors", [u["id"]], external_id="mgw-auditors")  # the ID token says developers + auditors
     async with make_client(app) as http:
         assert sso_error(await sso_login(http, "bob")) is None
         me = (await http.get("/api/v1/auth/me")).json()

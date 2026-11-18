@@ -31,6 +31,7 @@ log = get_logger(__name__)
 CONFIG_KEY = "ldap"
 SECRET_AAD = "system:ldap:bind_password"  # noqa: S105 (associated data label, not a secret)
 SOURCE = "ldap"
+BIND_DESTINATION_FIELDS = ("server_urls", "start_tls", "ca_pem", "bind_dn")
 
 
 class LdapService:
@@ -96,6 +97,16 @@ class LdapService:
             data["bind_password_enc"] = (self.encryptor.encrypt(body.bind_password.encode(), SECRET_AAD)
                                          if body.bind_password else None)
         else:
+            if cfg.get("bind_password_enc"):
+                before = self._config(cfg)
+                moved = [k for k in BIND_DESTINATION_FIELDS if data.get(k) != before.get(k)]
+                if moved:
+                    # The password is sent to these servers: never to a server (or over a TLS setup) it wasn't
+                    # entered for.
+                    raise GatewayError(ErrorCode.VALIDATION_FAILED,
+                                       "Enter the service account password again (or clear it) when changing the "
+                                       "servers or their TLS settings: a stored password is only sent where it was "
+                                       "saved for.", details=[{"field": k} for k in moved])
             data["bind_password_enc"] = cfg.get("bind_password_enc")
         if data["bind_dn"] and not data["bind_password_enc"] and data["enabled"]:
             raise GatewayError(ErrorCode.VALIDATION_FAILED, "Set the service account password.")

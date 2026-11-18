@@ -13,7 +13,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import Field, PrivateAttr, field_validator, model_validator
+from pydantic import Field, PrivateAttr, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 PLACEHOLDER_MARKERS = ("replace-with", "changeme", "change-me", "example", "placeholder")
@@ -81,6 +81,11 @@ class Settings(BaseSettings):
     redis_fail_open_dev: bool = False
     login_max_attempts_per_window: int = 10
     login_window_seconds: int = 300
+    # Failed sign-ins per source address (any username) and per account (any address) in the same window.
+    # Per address is off (0) by default: behind a proxy that hides client addresses everyone shares one, and
+    # the cap would let anybody lock everybody out. Enable it once the gateway sees real client addresses.
+    login_max_attempts_per_ip_window: int = Field(default=0, ge=0)
+    login_max_attempts_per_account_window: int = Field(default=100, ge=1)
 
     bootstrap_admin_username: str = ""
     bootstrap_admin_password: str = Field(default="", repr=False)
@@ -100,13 +105,16 @@ class Settings(BaseSettings):
     mtls_client_ca_file: str | None = None  # PEM bundle of the CAs that issue agent certificates
     mtls_trusted_proxies: Annotated[list[str], NoDecode] = Field(default_factory=list)  # CIDRs, e.g. 172.30.0.0/24
     mtls_client_cert_header: str = Field(default="x-client-cert", pattern=r"^[A-Za-z0-9-]{1,64}$")
+    # Reverse proxies whose X-Forwarded-For / X-Forwarded-Proto are believed (CIDRs; the edge network in Compose).
+    # From anyone else the headers are ignored and the TCP peer is the client. MTLS_TRUSTED_PROXIES count too.
+    trusted_proxies: Annotated[list[str], NoDecode] = Field(default_factory=list)
 
     worker_poll_interval_seconds: float = 2.0
     health_check_interval_seconds: float = 60.0
 
     @field_validator(
         "upstream_host_allowlist", "stdio_executable_allowlist", "cors_allowed_origins", "redis_sentinels",
-        "mtls_trusted_proxies", mode="before"
+        "mtls_trusted_proxies", "trusted_proxies", mode="before"
     )
     @classmethod
     def _split_csv(cls, v: object) -> object:
@@ -146,16 +154,20 @@ class Settings(BaseSettings):
             host, _, port = s.rpartition(":")
             if not host or not port.isdigit():
                 raise ValueError(f"REDIS_SENTINELS entries must be host:port, got {s!r}")
-        if self.mtls_client_ca_file:
-            if not self.mtls_trusted_proxies:
-                raise ValueError("MTLS_TRUSTED_PROXIES is required with MTLS_CLIENT_CA_FILE: the certificate header "
-                                 "may only be accepted from the TLS proxy")
-            import ipaddress
+        if self.mtls_client_ca_file and not self.mtls_trusted_proxies:
+            raise ValueError("MTLS_TRUSTED_PROXIES is required with MTLS_CLIENT_CA_FILE: the certificate header "
+                             "may only be accepted from the TLS proxy")
+        import ipaddress
 
-            for cidr in self.mtls_trusted_proxies:
-                net = ipaddress.ip_network(cidr, strict=False)  # raises if malformed
+        for name, cidrs in (("MTLS_TRUSTED_PROXIES", self.mtls_trusted_proxies),
+                            ("TRUSTED_PROXIES", self.trusted_proxies)):
+            for cidr in cidrs:
+                try:
+                    net = ipaddress.ip_network(cidr, strict=False)
+                except ValueError:
+                    raise ValueError(f"{name}: {cidr!r} is not an IP address or CIDR") from None
                 if net.prefixlen == 0:
-                    raise ValueError("MTLS_TRUSTED_PROXIES must not trust every address")
+                    raise ValueError(f"{name} must not trust every address")
         if self.data_encryption_key:
             self.encryption_key_bytes()  # raises if malformed
         elif self.app_env == "production":
@@ -186,7 +198,19 @@ class Settings(BaseSettings):
         return self.app_env in ("development", "test")
 
 
+class ConfigError(RuntimeError):
+    """Invalid configuration. The message names the settings and the problems, never their values."""
+
+
 @lru_cache
 def get_settings() -> Settings:
     _read_secret_files()
-    return Settings()
+    try:
+        return Settings()
+    except ValidationError as exc:
+        # pydantic's own message quotes the input, which for a model-level check is every setting, secrets and
+        # the bootstrap password included. Startup errors end up in log aggregation: report without values.
+        problems = "; ".join(
+            f"{'.'.join(str(x) for x in e['loc']) or 'settings'}: {e['msg']}"
+            for e in exc.errors(include_input=False, include_url=False, include_context=False))
+        raise ConfigError(f"Invalid configuration: {problems}") from None

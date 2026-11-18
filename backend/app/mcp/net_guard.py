@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import ipaddress
 import socket
-from collections.abc import Iterable
+from collections.abc import AsyncIterator, Iterable
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlsplit
@@ -43,6 +43,7 @@ PRIVATE = [
     ipaddress.ip_network("172.16.0.0/12"),
     ipaddress.ip_network("192.168.0.0/16"),
     ipaddress.ip_network("fc00::/7"),
+    ipaddress.ip_network("fec0::/10"),  # deprecated IPv6 site-local, still routed on some networks
 ]
 
 
@@ -144,9 +145,34 @@ class GuardedNetworkBackend(AsyncNetworkBackend):
         await self._inner.sleep(seconds)
 
 
+DEFAULT_MAX_RESPONSE_BYTES = 16 * 1024 * 1024
+
+
+class ResponseTooLarge(httpx2.ReadError):
+    """An upstream response body exceeded the gateway's limit: read is aborted before it is buffered or parsed."""
+
+
+class _CappedStream(httpx2.AsyncByteStream):
+    def __init__(self, inner: httpx2.AsyncByteStream, limit: int, request: httpx2.Request) -> None:
+        self._inner, self._limit, self._request = inner, limit, request
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        seen = 0
+        async for chunk in self._inner:
+            seen += len(chunk)
+            if seen > self._limit:
+                raise ResponseTooLarge("Upstream response exceeds the size limit", request=self._request)
+            yield chunk
+
+    async def aclose(self) -> None:
+        await self._inner.aclose()
+
+
 class GuardedTransport(httpx2.AsyncHTTPTransport):
-    def __init__(self, policy: NetPolicy, verify: Any = True) -> None:
+    def __init__(self, policy: NetPolicy, verify: Any = True,
+                 max_response_bytes: int = DEFAULT_MAX_RESPONSE_BYTES) -> None:
         super().__init__(verify=verify, trust_env=False)
+        self.max_response_bytes = max_response_bytes
         ssl_context = self._pool._ssl_context  # reuse the context the parent built
         self._pool = httpcore2.AsyncConnectionPool(
             ssl_context=ssl_context,
@@ -155,12 +181,25 @@ class GuardedTransport(httpx2.AsyncHTTPTransport):
             network_backend=GuardedNetworkBackend(policy),
         )
 
+    async def handle_async_request(self, request: httpx2.Request) -> httpx2.Response:
+        """Bound every response body. The MCP SDK reads JSON responses whole and parses them before the gateway's
+        output limits apply, and a streamed (SSE) response could grow without end."""
+        response = await super().handle_async_request(request)
+        length = response.headers.get("content-length", "")
+        if length.isdigit() and int(length) > self.max_response_bytes:
+            await response.aclose()
+            raise ResponseTooLarge("Upstream response exceeds the size limit", request=request)
+        assert isinstance(response.stream, httpx2.AsyncByteStream)
+        response.stream = _CappedStream(response.stream, self.max_response_bytes, request)
+        return response
+
 
 def guarded_client(
-    policy: NetPolicy, *, headers: dict[str, str] | None = None, timeout: float = 30, verify: Any = True
+    policy: NetPolicy, *, headers: dict[str, str] | None = None, timeout: float = 30, verify: Any = True,
+    max_response_bytes: int = DEFAULT_MAX_RESPONSE_BYTES,
 ) -> httpx2.AsyncClient:
     return httpx2.AsyncClient(
-        transport=GuardedTransport(policy, verify=verify),
+        transport=GuardedTransport(policy, verify=verify, max_response_bytes=max_response_bytes),
         headers=headers or {},
         timeout=httpx2.Timeout(timeout, connect=min(timeout, 10)),
         follow_redirects=False,

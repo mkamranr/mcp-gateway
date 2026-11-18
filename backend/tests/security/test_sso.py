@@ -230,7 +230,7 @@ async def test_break_glass_only(app, admin, mock_idp, container):
     await configure(admin, mock_idp, local_login="break_glass_only", break_glass_usernames=["admin"])
     async with make_client(app) as http:
         r = await http.post("/api/v1/auth/login", json={"username": "dev1", "password": "Dev1-Local-Pass-1"})
-        assert r.status_code == 403 and "single sign-on" in r.json()["error"]["message"]
+        assert r.status_code == 401 and r.json()["error"]["code"] == "INVALID_CREDENTIAL"  # no password oracle
         r = await http.post("/api/v1/auth/login", json={"username": "admin", "password": ADMIN_PASSWORD})
         assert r.status_code == 200
     assert await container.repos.audit.col.find_one({"event_type": "auth.break_glass.used", "severity": "high"})

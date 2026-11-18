@@ -95,3 +95,20 @@ async def test_rotation_includes_the_siem_credential(admin, container):
     assert report.rotated == 1 and not report.failed
     doc = await container.repos.settings.col.find_one({"key": "siem"})
     assert new.decrypt(doc["value"]["http_auth_value_enc"], SECRET_AAD) == b"Bearer siem-rotate-me"
+
+
+async def test_rotation_and_verify_include_the_ldap_bind_password(admin, container):
+    from app.services.ldap_service import SECRET_AAD
+    from app.tools.verify_data import verify
+
+    r = await admin.put("/api/v1/ldap/config", json={"server_urls": ["ldaps://ldap.example"],
+                                                      "bind_dn": "cn=svc,dc=example,dc=com",
+                                                      "bind_password": "ldap-rotate-me"})
+    assert r.status_code == 200, r.text
+    old, new = container.encryptor, Encryptor(os.urandom(32))
+    assert (await verify(container.db.db, old))["ciphertexts"] == {"checked": 1, "failed": []}
+    report = await rotate(container.db.db, old, new)
+    assert report.rotated == 1 and not report.failed
+    doc = await container.repos.settings.col.find_one({"key": "ldap"})
+    assert new.decrypt(doc["value"]["bind_password_enc"], SECRET_AAD) == b"ldap-rotate-me"
+    assert (await verify(container.db.db, old))["ciphertexts"]["failed"] == ["system_settings/ldap.bind_password_enc"]

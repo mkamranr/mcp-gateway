@@ -13,7 +13,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.core.errors import DEPENDENCY_ERRORS, SCIM_PREFIX, ErrorCode, GatewayError, ScimError, dependency_unavailable
-from app.core.logging import get_logger, request_id_var
+from app.core.logging import client_request_id_var, get_logger, request_id_var
 
 log = get_logger(__name__)
 REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9_\-]{8,64}$")
@@ -42,15 +42,19 @@ class CorrelationMiddleware:
             await self.app(scope, receive, send)
             return
         headers = dict(scope.get("headers") or [])
+        # Always generated here: the request id links audit events, so a client must not be able to choose it.
+        # A well-formed id the client sent is kept separately (logs only) for the caller's own correlation.
         incoming = headers.get(b"x-request-id", b"").decode("latin-1")
-        rid = incoming if REQUEST_ID_RE.match(incoming) else f"req_{secrets.token_hex(10)}"
+        rid = f"req_{secrets.token_hex(10)}"
         token = request_id_var.set(rid)
+        client_token = client_request_id_var.set(incoming if REQUEST_ID_RE.match(incoming) else None)
         scope.setdefault("state", {})["request_id"] = rid
 
         declared = headers.get(b"content-length")
         if declared and declared.isdigit() and int(declared) > self.max_body:
             await _send_json(send, 413, _envelope(ErrorCode.PAYLOAD_TOO_LARGE, "Request body too large.", rid))
             request_id_var.reset(token)
+            client_request_id_var.reset(client_token)
             return
         received = 0
 
@@ -80,6 +84,7 @@ class CorrelationMiddleware:
             await self.app(scope, limited_receive, send_wrapper)
         finally:
             request_id_var.reset(token)
+            client_request_id_var.reset(client_token)
 
 
 async def _send_json(send: Send, status: int, body: dict[str, Any]) -> None:

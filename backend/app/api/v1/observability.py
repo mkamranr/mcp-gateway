@@ -66,12 +66,25 @@ def _audit_params(start: datetime | None = None, end: datetime | None = None, ev
     return {k: v for k, v in locals().items() if v is not None}
 
 
+async def _audit_cross_tenant(c: Container, p: Principal, target: str, what: dict[str, Any]) -> None:
+    """A platform administrator reading another tenant's audit trail (or all of them) leaves a trace: in the
+    target tenant (so its own auditors see it) or, for a search across all tenants, in the administrator's."""
+    await c.audit.record(p.tenant_id if target == "*" else target, "audit.searched.cross_tenant", principal=p,
+                         severity="high", required=True,
+                         metadata={"target_tenant": target, **{k: str(v)[:200] for k, v in what.items()}})
+
+
 async def _search(c: Container, p: Principal, params: dict[str, Any], **page: Any) -> Any:
     q = _audit_query(params)
     tenant = params.get("tenant")
     if tenant and tenant != p.tenant_id:
         if not p.is_global_admin:
             raise not_found("Tenant")
+        if tenant != "*" and not await c.repos.tenants.get(tenant):
+            raise not_found("Tenant")
+        # Only the first page is recorded: paging through one search is one search.
+        if not page.get("cursor"):
+            await _audit_cross_tenant(c, p, tenant, {k: v for k, v in params.items() if k != "tenant"})
         if tenant == "*":
             return await c.repos.audit.search_global(q, **page)
         return await c.repos.audit.search(tenant, q, **page)
@@ -91,6 +104,8 @@ async def audit_event(event_id: str, p: Principal = Depends(require_user(*AUDIT_
     e = await c.repos.audit.get(p.tenant_id, event_id)
     if not e and p.is_global_admin:
         e = await c.repos.audit.col.find_one({"_id": event_id})
+        if e:
+            await _audit_cross_tenant(c, p, e["tenant_id"], {"event_id": event_id})
     if not e:
         raise not_found("Audit event")
     correlated: list[dict[str, Any]] = []
@@ -111,9 +126,29 @@ async def audit_event(event_id: str, p: Principal = Depends(require_user(*AUDIT_
     return {**_clean(e), "correlated": correlated, "approval": approval}
 
 
+class ExportFilters(Strict):
+    """The same filters as the search endpoint, as plain values: an object here (a MongoDB operator such as
+    {"$regex": ...} or {"$ne": null}) is rejected rather than passed into the query."""
+
+    start: datetime | None = None
+    end: datetime | None = None
+    event_type: str | None = Field(default=None, max_length=200)
+    decision: str | None = Field(default=None, max_length=100)
+    status: str | None = Field(default=None, max_length=100)
+    request_id: str | None = Field(default=None, max_length=100)
+    invocation_id: str | None = Field(default=None, max_length=100)
+    approval_id: str | None = Field(default=None, max_length=100)
+    server_id: str | None = Field(default=None, max_length=100)
+    tool_id: str | None = Field(default=None, max_length=100)
+    principal: str | None = Field(default=None, max_length=200)
+    tool: str | None = Field(default=None, max_length=200)
+    severity: str | None = Field(default=None, max_length=50)
+    tenant: str | None = Field(default=None, max_length=100)  # accepted for symmetry; exports are own-tenant only
+
+
 class ExportRequest(Strict):
     format: str = Field(default="json", pattern="^(json|csv)$")
-    filters: dict[str, Any] = Field(default_factory=dict)
+    filters: ExportFilters = Field(default_factory=ExportFilters)
     max_rows: int = Field(default=10_000, ge=1, le=100_000)
 
 
@@ -131,10 +166,7 @@ def _get(d: dict[str, Any], path: str) -> Any:
 @router.post("/audit/export")
 async def audit_export(body: ExportRequest, p: Principal = Depends(require_user(*AUDIT_READ)),
                        c: Container = Depends(get_container)) -> Response:
-    allowed = {k: v for k, v in body.filters.items() if k in _audit_params.__code__.co_varnames}
-    for k in ("start", "end"):
-        if allowed.get(k):
-            allowed[k] = datetime.fromisoformat(str(allowed[k]).replace("Z", "+00:00"))
+    allowed = {k: v for k, v in body.filters.model_dump(exclude={"tenant"}).items() if v not in (None, "")}
     limit = min(body.max_rows, c.settings.audit_export_max_rows)
     q = _audit_query(allowed)
     total = await c.repos.audit.count(p.tenant_id, q)
@@ -298,30 +330,42 @@ def _key_management(s: Any) -> dict[str, Any]:
 
 @router.get("/settings")
 async def get_settings_(p: Principal = Depends(require_user()), c: Container = Depends(get_container)) -> dict[str, Any]:
+    """Every signed-in user sees what affects their work (endpoint, session, limits); the platform's key service,
+    network allowlists, CORS origins and stored global settings are for global administrators only."""
     s = c.settings
-    stored = await c.repos.settings.all()
     tenant = await c.repos.tenants.get(p.tenant_id) or {}
+    admin = p.is_global_admin
+    security: dict[str, Any] = {"default_deny": True, "audit_required_for_execution": s.audit_required_for_execution}
+    system: dict[str, Any] = {
+        "version": s.app_version, "environment": s.app_env, "mcp_endpoint": s.mcp_endpoint_path,
+        "public_base_url": s.public_base_url,
+        "session": {"ttl_minutes": s.session_ttl_minutes, "idle_minutes": s.session_idle_minutes,
+                    "cookie_secure": s.cookie_secure},
+        "security": security,
+        "payload_limits": {"max_input_bytes": s.max_input_bytes, "max_output_bytes": s.max_output_bytes,
+                           "max_json_depth": s.max_json_depth, "default_tool_timeout_seconds":
+                               s.default_tool_timeout_seconds, "max_tool_timeout_seconds": s.max_tool_timeout_seconds},
+        "audit": {"retention_days": s.audit_retention_days, "export_max_rows": s.audit_export_max_rows},
+    }
+    stored: dict[str, Any] = {}
+    if admin:
+        security.update({"allow_private_upstream_networks": s.allow_private_upstream_networks,
+                         "key_management": _key_management(s)})
+        system["network"] = {"upstream_host_allowlist": s.upstream_host_allowlist,
+                             "stdio_executable_allowlist": s.stdio_executable_allowlist,
+                             "cors_allowed_origins": s.cors_allowed_origins}
+        stored = {k: v for k, v in (await c.repos.settings.all()).items() if k in SETTING_KEYS}
+    else:
+        # The global call limits apply to everyone's calls, so they stay visible (read-only).
+        gl = await c.repos.settings.get_value("global_limits")
+        if gl:
+            stored = {"global_limits": gl}
     return {
-        "system": {
-            "version": s.app_version, "environment": s.app_env, "mcp_endpoint": s.mcp_endpoint_path,
-            "public_base_url": s.public_base_url,
-            "session": {"ttl_minutes": s.session_ttl_minutes, "idle_minutes": s.session_idle_minutes,
-                        "cookie_secure": s.cookie_secure},
-            "security": {"default_deny": True, "audit_required_for_execution": s.audit_required_for_execution,
-                         "allow_private_upstream_networks": s.allow_private_upstream_networks,
-                         "key_management": _key_management(s)},
-            "payload_limits": {"max_input_bytes": s.max_input_bytes, "max_output_bytes": s.max_output_bytes,
-                               "max_json_depth": s.max_json_depth, "default_tool_timeout_seconds":
-                                   s.default_tool_timeout_seconds, "max_tool_timeout_seconds": s.max_tool_timeout_seconds},
-            "network": {"upstream_host_allowlist": s.upstream_host_allowlist,
-                        "stdio_executable_allowlist": s.stdio_executable_allowlist,
-                        "cors_allowed_origins": s.cors_allowed_origins},
-            "audit": {"retention_days": s.audit_retention_days, "export_max_rows": s.audit_export_max_rows},
-        },
-        "stored": {k: v for k, v in stored.items() if k in SETTING_KEYS},
+        "system": system,
+        "stored": stored,
         "tenant": tenant.get("settings", {}),
         "health": await _health_components(c),
-        "editable": p.is_global_admin,
+        "editable": admin,
     }
 
 

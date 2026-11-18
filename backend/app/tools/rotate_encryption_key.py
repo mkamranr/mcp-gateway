@@ -7,6 +7,7 @@ Re-encrypts every AES-GCM ciphertext the gateway stores from the old key to the 
 * ``approval_requests.result_encrypted``    approved-call results AD = "<tenant>:<approval id>:result"
 * ``system_settings[oidc].value.client_secret_enc`` SSO client secret AD = "system:oidc:client_secret"
 * ``system_settings[siem].value.http_auth_value_enc`` SIEM collector credential AD = "system:siem:http_auth_value"
+* ``system_settings[ldap].value.bind_password_enc``   LDAP service account   AD = "system:ldap:bind_password"
 
 Procedure (see docs/operations.md): stop gateway-api and worker, back up MongoDB and the old key, run this
 tool, switch DATA_ENCRYPTION_KEY to the new key, start the services. The tool is idempotent: values that
@@ -78,14 +79,15 @@ class Ciphertext:
 
 async def iter_ciphertexts(db: Any) -> AsyncIterator[Ciphertext]:
     """Every ciphertext the gateway stores. Shared by rotation and by ``app.tools.verify_data``."""
-    from app.services import siem_service, sso_service
+    from app.services import ldap_service, siem_service, sso_service
 
     for collection, fld, suffix in TARGETS:
         async for doc in db[collection].find({fld: {"$nin": [None, ""]}}, {fld: 1, "tenant_id": 1}):
             yield Ciphertext(f"{collection}/{doc['_id']}.{fld}", collection, doc["_id"], fld, doc[fld],
                              f"{doc['tenant_id']}:{doc['_id']}{suffix}")
     for key, name, aad in ((sso_service.CONFIG_KEY, "client_secret_enc", sso_service.SECRET_AAD),
-                           (siem_service.CONFIG_KEY, "http_auth_value_enc", siem_service.SECRET_AAD)):
+                           (siem_service.CONFIG_KEY, "http_auth_value_enc", siem_service.SECRET_AAD),
+                           (ldap_service.CONFIG_KEY, "bind_password_enc", ldap_service.SECRET_AAD)):
         fld = f"value.{name}"
         doc = await db["system_settings"].find_one({"key": key, fld: {"$nin": [None, ""]}})
         if doc is not None:

@@ -281,7 +281,7 @@ async def test_break_glass_only_restricts_local_passwords(app, admin, directory)
     assert r.status_code == 422  # not a platform administrator: would leave no working break-glass account
     await configure(admin, local_login="break_glass_only", break_glass_usernames=[ADMIN_USER])
     status, body, _ = await sign_in(app, "local-dev", "Local-Dev-Pass-123")
-    assert status == 403 and "directory" in body["error"]["message"]
+    assert status == 401 and body["error"]["code"] == "INVALID_CREDENTIAL"  # same as a wrong password: no oracle
     for user, pw in ((ADMIN_USER, ADMIN_PASSWORD), ("kim", PW)):
         status, _, c = await sign_in(app, user, pw)
         assert status == 200, user

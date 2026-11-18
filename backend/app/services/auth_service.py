@@ -70,11 +70,19 @@ class AuthService:
     # ------------------------------------------------------------------ users
     async def login(self, username: str, password: str, source_ip: str, tenant_id: str | None) -> dict[str, Any]:
         uname = username.strip().lower()
-        throttle_key = f"login:{uname}:{source_ip}"
-        # Counted up front (atomic, so parallel guesses are capped too); a successful sign-in returns its slot
-        # below, so only failures accumulate and automation that signs in often is not locked out.
-        await self._throttle(throttle_key, self.settings.login_max_attempts_per_window,
-                             self.settings.login_window_seconds)
+        # Three counters: per username and address, per address (password spraying across usernames) and per
+        # account (guessing from many addresses). Counted up front (atomic, so parallel guesses are capped too);
+        # a successful sign-in returns its slots below, so only failures accumulate and automation that signs in
+        # often is not locked out. Break-glass accounts have no per-account counter, so nobody can lock them out
+        # from everywhere.
+        s, window = self.settings, self.settings.login_window_seconds
+        throttles = [(f"login:{uname}:{source_ip}", s.login_max_attempts_per_window)]
+        if s.login_max_attempts_per_ip_window:
+            throttles.append((f"login-ip:{source_ip}", s.login_max_attempts_per_ip_window))
+        if uname not in await self._break_glass_usernames():
+            throttles.append((f"login-user:{uname}", s.login_max_attempts_per_account_window))
+        for key, limit in throttles:
+            await self._throttle(key, limit, window)
         user = await self.repos.users.by_username(uname)
         # Local accounts always sign in locally, so a directory entry can never take over a local account by
         # sharing its username. Unknown usernames and directory accounts go to the directory when it's enabled.
@@ -95,17 +103,31 @@ class AuthService:
             if password_needs_rehash(user["password_hash"]):
                 await self.repos.users.update(user["_id"], {"password_hash": hash_password(password)})
         assert user is not None
-        try:
-            await self.redis.decr(self._throttle_key(throttle_key))
-        except Exception:  # noqa: BLE001, S110 - the slot simply expires with the window
-            pass
+        await self._release_throttles([key for key, _ in throttles])
         return await self.create_session(user, source_ip, tenant_id, method=method)
+
+    async def _release_throttles(self, keys: list[str]) -> None:
+        for key in keys:
+            try:
+                await self.redis.decr(self._throttle_key(key))
+            except Exception:  # noqa: BLE001, S110 - the slot simply expires with the window
+                pass
+
+    async def _local_login_restrictions(self) -> list[dict[str, Any]]:
+        return [cfg for cfg in [await self.repos.settings.get_value(k) or {} for k in ("oidc", "ldap")]
+                if cfg.get("enabled") and cfg.get("local_login") == "break_glass_only"]
+
+    async def _break_glass_usernames(self) -> set[str]:
+        names: set[str] = set()
+        for k in ("oidc", "ldap"):
+            cfg = await self.repos.settings.get_value(k) or {}
+            names.update(str(n).lower() for n in cfg.get("break_glass_usernames") or [])
+        return names
 
     async def _check_local_login_allowed(self, user: dict[str, Any], source_ip: str) -> None:
         """When SSO or directory sign-in restricts local login, only the named break-glass accounts may use a
         local password (an account named by any of them)."""
-        restricting = [cfg for cfg in [await self.repos.settings.get_value(k) or {} for k in ("oidc", "ldap")]
-                       if cfg.get("enabled") and cfg.get("local_login") == "break_glass_only"]
+        restricting = await self._local_login_restrictions()
         if not restricting:
             return
         if any(user["username"] in (cfg.get("break_glass_usernames") or []) for cfg in restricting):
@@ -120,8 +142,9 @@ class AuthService:
             principal={"type": "user", "id": user["_id"], "name": user["username"]},
             status="failure", metadata={"source_ip": source_ip, "reason": "local_login_disabled"},
         )
-        raise GatewayError(ErrorCode.ACCESS_DENIED,
-                           "Local password sign-in is disabled. Use single sign-on or your directory account.")
+        # The same answer as a wrong password: a different one would confirm that the password was right.
+        # The audit event above records the real reason.
+        raise GatewayError(ErrorCode.INVALID_CREDENTIAL, "Invalid username or password.")
 
     async def create_session(self, user: dict[str, Any], source_ip: str, tenant_id: str | None = None,
                              *, method: str = "password") -> dict[str, Any]:
@@ -232,11 +255,24 @@ class AuthService:
         if principal:
             await self.audit.record(principal.tenant_id, "auth.logout", principal=principal)
 
-    async def revoke_user_sessions(self, user_id: str) -> None:
+    async def revoke_user_sessions(self, user_id: str, tenant_id: str | None = None) -> None:
+        """End the user's console sessions: all of them, or only those working in ``tenant_id``.
+
+        A tenant administrator's action ends only sessions in their tenant: the membership check on every request
+        already keeps the user out of that tenant, and sessions in other tenants are not theirs to end."""
         sids = await self.redis.smembers(f"usess:{user_id}")
+        if tenant_id is None:
+            for sid in sids:
+                await self.redis.delete(self._skey(str(sid)))
+            await self.redis.delete(f"usess:{user_id}")
+            return
         for sid in sids:
-            await self.redis.delete(self._skey(str(sid)))
-        await self.redis.delete(f"usess:{user_id}")
+            raw = await self.redis.get(self._skey(str(sid)))
+            if raw is None:
+                await self.redis.srem(f"usess:{user_id}", sid)
+            elif json.loads(raw).get("tenant_id") == tenant_id:
+                await self.redis.delete(self._skey(str(sid)))
+                await self.redis.srem(f"usess:{user_id}", sid)
 
     async def change_password(self, principal: Principal, current: str, new: str) -> None:
         user = await self.repos.users.get(principal.principal_id)
@@ -244,17 +280,23 @@ class AuthService:
             raise GatewayError(ErrorCode.CONFLICT, "This account signs in through single sign-on and has no password.")
         if user and user.get("auth_source") == "ldap":
             raise GatewayError(ErrorCode.CONFLICT, "This account's password is managed in the corporate directory.")
+        # Someone holding a stolen session must not be able to guess the password online.
+        throttle = f"pwchange:{principal.principal_id}"
+        await self._throttle(throttle, self.settings.login_max_attempts_per_window, self.settings.login_window_seconds)
         if not user or not verify_password(current, user.get("password_hash")):
             raise GatewayError(ErrorCode.INVALID_CREDENTIAL, "Current password is incorrect.")
+        await self._release_throttles([throttle])
         await self.repos.users.update(user["_id"], {"password_hash": hash_password(new), "must_change_password": False})
         await self.revoke_user_sessions(user["_id"])
         await self.audit.record(principal.tenant_id, "auth.password.changed", principal=principal)
 
     # ------------------------------------------------------------------ agents
-    async def authenticate_agent(self, headers: Mapping[str, str], source: str | None) -> Principal | None:
+    async def authenticate_agent(self, headers: Mapping[str, str], source: str | None,
+                                 peer: str | None = None) -> Principal | None:
         """An agent credential on the request: an API key or an IdP access token (``Authorization: Bearer``), else
         a client certificate forwarded by a trusted TLS proxy. ``None`` when the request carries none of them.
-        ``headers`` are lower-case."""
+        ``headers`` are lower-case. ``source`` is the client address (as vouched for by a trusted proxy), ``peer``
+        the TCP peer: only the latter decides whether a forwarded certificate came from the TLS proxy."""
         auth = headers.get("authorization", "")
         if auth.lower().startswith("bearer "):
             token = auth[7:].strip()
@@ -264,10 +306,11 @@ class AuthService:
         forwarded = headers.get(self.settings.mtls_client_cert_header.lower(), "")
         if not forwarded or self.cert_verifier is None:
             return None
-        if not address_in(source, self.cert_proxies):
+        if not address_in(peer, self.cert_proxies):
             # Only the proxy that did the TLS handshake may vouch for a certificate: a certificate is public, so
             # anyone else sending this header proves nothing. Ignored, and logged as a possible spoofing attempt.
-            log.warning("auth.client_cert.untrusted_source", source=source)
+            # Decided on the TCP peer: a forwarded address is whatever the caller wrote.
+            log.warning("auth.client_cert.untrusted_source", source=source, peer=peer)
             return None
         return await self.authenticate_client_cert(forwarded, source=source)
 

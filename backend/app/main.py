@@ -9,6 +9,7 @@ from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.middleware import CorrelationMiddleware, install_error_handlers
+from app.api.proxy import TrustedProxyMiddleware
 from app.api.v1 import (
     agent_oauth,
     approvals,
@@ -25,6 +26,7 @@ from app.api.v1 import (
 )
 from app.config import Settings, get_settings
 from app.container import Container
+from app.core.client_certs import parse_networks
 from app.core.logging import configure_logging, get_logger
 from app.mcp.gateway_server import GatewayASGI, build_gateway
 from app.migrations.indexes import ensure_indexes
@@ -81,6 +83,9 @@ def create_app(settings: Settings | None = None, container: Container | None = N
         )
     app.add_middleware(CorrelationMiddleware, max_body=settings.max_request_body_bytes,
                        hsts=settings.public_base_url.startswith("https") and not settings.is_dev)
+    # Outermost: every layer below sees the client address only as vouched for by a trusted proxy.
+    app.add_middleware(TrustedProxyMiddleware,
+                       trusted=parse_networks([*settings.trusted_proxies, *settings.mtls_trusted_proxies]))
     return app
 
 

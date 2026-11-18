@@ -17,6 +17,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import TypeAdapter
 from starlette.types import Receive, Scope, Send
 
+from app.api.proxy import peer_address
 from app.container import Container
 from app.core.errors import ErrorCode, GatewayError, dependency_unavailable
 from app.core.identity import Principal
@@ -166,7 +167,8 @@ class GatewayASGI:
         headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers") or []}
         client = scope.get("client")
         try:
-            principal = await self.c.auth.authenticate_agent(headers, source=client[0] if client else None)
+            principal = await self.c.auth.authenticate_agent(headers, source=client[0] if client else None,
+                                                             peer=peer_address(scope))
             if principal is None:
                 raise GatewayError(ErrorCode.AUTHENTICATION_REQUIRED)
         except GatewayError as exc:

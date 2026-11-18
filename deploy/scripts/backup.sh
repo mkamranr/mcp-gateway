@@ -19,7 +19,9 @@ NAME="mcp-gateway-$STAMP.archive.gz"
 umask 077
 mkdir -p "$OUT"
 docker compose exec -T mongodb sh -c \
-  'mongodump --quiet --archive --gzip -u mgw_root -p "$(cat /run/secrets/mongo_root_password)" --authenticationDatabase admin --db "$1"' \
+  'umask 077; f="$(mktemp)"; printf "password: \"%s\"\n" "$(cat /run/secrets/mongo_root_password)" > "$f"
+   mongodump --quiet --archive --gzip -u mgw_root --config "$f" --authenticationDatabase admin --db "$1"; rc=$?
+   rm -f "$f"; exit $rc' \
   sh "$DB" > "$OUT/$NAME.partial"
 
 if [ ! -s "$OUT/$NAME.partial" ]; then

@@ -33,16 +33,25 @@ default attribute mappings work unchanged.
   returns 404. A SCIM user with the same `userName` as an existing account is refused with 409. A leaked SCIM
   token can't lock out the administrators who would revoke it.
 - **Only provisioned users can be group members.** Other member IDs are ignored.
-- **Deleting a user** disables the account, ends its sessions and removes it from every group. The record stays,
-  so its audit history remains attached. If the IdP provisions the same `userName` again, the record is reused.
+- **Deleting a user** disables the account, ends its sessions, removes it from every group and disables **all**
+  of its tenant memberships, including ones an administrator added by hand. The record stays, so its audit
+  history remains attached. If the IdP provisions the same `userName` again, the record is reused, but none of
+  the previous access is: user names get recycled, and the new owner may be a different person. Memberships
+  come back only through the new user's own groups (or an administrator adding them again).
 - **Deactivating a user** (`active: false`) disables the account and ends its sessions at once.
 
 ## Roles: groups and group rules
 
 Pushed groups go through the same **group rules** and **platform-administrator groups** as single sign-on
-(Settings → Single sign-on). A rule matches a SCIM group if its group equals the group's `displayName` or its
-`externalId`. For Entra ID, the `externalId` is usually the group's object ID, so rules written for SSO `groups`
-claims (object IDs) keep working.
+(Settings → Single sign-on). A rule matches a SCIM group if its group equals the group's **`externalId`**. For
+Entra ID, the `externalId` is usually the group's object ID, so rules written for SSO `groups` claims (object
+IDs) keep working.
+
+The `displayName` is **not** matched by default. In many IdPs any user can create a group and name it as they
+like, for example after the object ID of the platform-administrator group. If your IdP sends groups without an
+`externalId`, turn on **Match groups without an external ID by display name** (`match_group_display_name`).
+Then only groups that have no `externalId` are matched by `displayName`, so make sure that only administrators
+can create groups that the IdP provisions. Changing the setting re-evaluates every provisioned user at once.
 
 Membership changes apply as soon as the IdP pushes them. Sessions re-read memberships on every request, so
 there's no need to sign in again. Renaming a group re-evaluates all of its members.
@@ -90,7 +99,8 @@ away. **Revoke token** also turns provisioning off.
   they map to, including platform administrator. Store it only in the IdP, rotate it when IdP administrators
   change, and keep the group rules narrow. Failed attempts are throttled per source address.
 - **Group rules are the authorization boundary.** Whoever can change membership of a mapped group in the IdP
-  controls access here, as with SSO.
+  controls access here, as with SSO. Groups are matched by `externalId`, which the IdP sets, not by a name a
+  user can choose (see above).
 - **Profile data is untrusted input.** Values are length-limited and control characters refused; nothing from
   SCIM is rendered as HTML.
 - **Everything is audited** under `_system`: `user.scim.created|updated|deactivated|deleted`,
@@ -102,8 +112,8 @@ away. **Revoke token** also turns provisioning off.
 
 | Method | Path | Who | |
 |---|---|---|---|
-| GET | `/api/v1/scim/config` | platform admin | `{enabled, link_claim, groups_authoritative, has_token, token_prefix, token_created_at, last_used_at, base_url}` |
-| PUT | `/api/v1/scim/config` | platform admin | `{enabled, link_claim, groups_authoritative}`. Enabling needs a token. |
+| GET | `/api/v1/scim/config` | platform admin | `{enabled, link_claim, groups_authoritative, match_group_display_name, has_token, token_prefix, token_created_at, last_used_at, base_url}` |
+| PUT | `/api/v1/scim/config` | platform admin | `{enabled, link_claim, groups_authoritative, match_group_display_name}`. Enabling needs a token. |
 | POST | `/api/v1/scim/token` | platform admin | A new token, returned once as `token` |
 | DELETE | `/api/v1/scim/token` | platform admin | Revoke the token and turn provisioning off |
 | * | `/api/v1/scim/v2/...` | SCIM token | The SCIM protocol. Errors use SCIM's error format (`application/scim+json`). |
